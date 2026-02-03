@@ -103,23 +103,46 @@ func NewProjectContext(ctx context.Context, cfg *config.Config) (*ProjectContext
 	}, nil
 }
 
+// requireDiscovery returns the Discovery instance or an error if unavailable
+func (pc *ProjectContext) requireDiscovery() (*project.Discovery, error) {
+	if pc.Discovery == nil {
+		return nil, domain.Errorf(domain.ErrNotInRepo, "project discovery unavailable (not in a git repository)")
+	}
+	return pc.Discovery, nil
+}
+
 // EnvFiles returns the list of environment files to track
 func (pc *ProjectContext) EnvFiles() ([]string, error) {
-	return pc.Discovery.EnvFiles()
+	d, err := pc.requireDiscovery()
+	if err != nil {
+		return nil, err
+	}
+	return d.EnvFiles()
 }
 
 // ReadProjectFile reads a file from the project directory
 func (pc *ProjectContext) ReadProjectFile(path string) ([]byte, error) {
-	return pc.Discovery.ReadFile(path)
+	d, err := pc.requireDiscovery()
+	if err != nil {
+		return nil, err
+	}
+	return d.ReadFile(path)
 }
 
 // WriteProjectFile writes a file to the project directory
 func (pc *ProjectContext) WriteProjectFile(path string, content []byte) error {
-	return pc.Discovery.WriteFile(path, content)
+	d, err := pc.requireDiscovery()
+	if err != nil {
+		return err
+	}
+	return d.WriteFile(path, content)
 }
 
 // FileExists checks if a file exists in the project
 func (pc *ProjectContext) FileExists(path string) bool {
+	if pc.Discovery == nil {
+		return false
+	}
 	return pc.Discovery.FileExists(path)
 }
 

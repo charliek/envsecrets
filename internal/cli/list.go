@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"path"
 	"sort"
 	"strings"
 
@@ -131,7 +130,7 @@ func listRepoFilesImpl(ctx context.Context, store storage.Storage, out *ui.Outpu
 				continue
 			}
 			files = append(files, fileInfo{
-				Name:    path.Base(obj.Name),
+				Name:    strings.TrimPrefix(obj.Name, prefix),
 				Size:    obj.Size,
 				Updated: obj.Updated.Format("2006-01-02 15:04:05"),
 			})

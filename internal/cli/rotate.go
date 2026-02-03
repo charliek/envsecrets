@@ -122,22 +122,25 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	out.Println()
 	out.Printf("Verifying current passphrase...")
 	verified := false
+	var lastDownloadErr error
 	for _, obj := range objects {
 		if strings.HasSuffix(obj, ".age") && !strings.HasSuffix(obj, "/HEAD") {
 			// Try to download and decrypt one file using closure for proper resource cleanup
-			data, ok := func() ([]byte, bool) {
+			data, downloadErr := func() ([]byte, error) {
 				r, err := store.Download(ctx, obj)
 				if err != nil {
-					return nil, false
+					return nil, fmt.Errorf("download failed: %w", err)
 				}
 				defer r.Close()
 				data, err := limitedio.LimitedReadAll(r, constants.MaxEncryptedFileSize, "encrypted file")
 				if err != nil {
-					return nil, false
+					return nil, fmt.Errorf("read failed: %w", err)
 				}
-				return data, true
+				return data, nil
 			}()
-			if !ok {
+			if downloadErr != nil {
+				lastDownloadErr = downloadErr
+				out.Verbose("Warning: failed to read %s: %v", obj, downloadErr)
 				continue
 			}
 			_, err = currentEnc.Decrypt(data)
@@ -150,7 +153,11 @@ func runRotate(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if !verified && len(objects) > 0 {
-		// There are objects but none are .age files - unusual but not an error
+		// There are objects but none are .age files or all downloads failed
+		if lastDownloadErr != nil {
+			out.Println(" FAILED")
+			return fmt.Errorf("failed to verify passphrase - could not download any files: %w", lastDownloadErr)
+		}
 		out.Println(" OK (no encrypted files found)")
 	} else if verified {
 		out.Println(" OK")

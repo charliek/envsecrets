@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -63,7 +64,13 @@ func (d *Discovery) ProjectRoot() string {
 func (d *Discovery) RepoInfo() (*domain.RepoInfo, error) {
 	// First check .envsecrets for repo: directive
 	envConfig, err := ParseEnvSecretsFile(d.EnvSecretsFile())
-	if err == nil && envConfig.RepoOverride != "" {
+	if err != nil {
+		// If file doesn't exist, fall back to git detection
+		// For any other error (parse error, invalid config), surface it
+		if !errors.Is(err, domain.ErrNoEnvFiles) && !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else if envConfig.RepoOverride != "" {
 		return ParseRepoString(envConfig.RepoOverride)
 	}
 
@@ -118,19 +125,27 @@ func (d *Discovery) EnvSecretsFile() string {
 func (d *Discovery) EnvFiles() ([]string, error) {
 	// Try .envsecrets file first
 	envFile := d.EnvSecretsFile()
-	config, err := ParseEnvSecretsFile(envFile)
-	if err == nil && len(config.Files) > 0 {
+	config, envErr := ParseEnvSecretsFile(envFile)
+	if envErr != nil {
+		// If it's not a "file missing" error, surface it
+		if !errors.Is(envErr, domain.ErrNoEnvFiles) && !os.IsNotExist(envErr) {
+			return nil, envErr
+		}
+	} else if len(config.Files) > 0 {
 		return config.Files, nil
 	}
 
 	// Fall back to .gitignore marker
 	gitignorePath := filepath.Join(d.projectRoot, ".gitignore")
-	files, err := ParseGitignoreMarker(gitignorePath)
-	if err == nil && len(files) > 0 {
+	files, gitErr := ParseGitignoreMarker(gitignorePath)
+	if gitErr != nil {
+		return nil, gitErr
+	}
+	if len(files) > 0 {
 		return files, nil
 	}
 
-	// If we had an error from .envsecrets (other than ErrNoEnvFiles), return it
+	// No tracked files found
 	if config == nil {
 		return nil, domain.ErrNoEnvFiles
 	}

@@ -46,7 +46,10 @@ func validateEnvSecretPath(path string) error {
 func ParseGitignoreMarker(path string) ([]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return nil, nil // Not an error if .gitignore doesn't exist
+		if os.IsNotExist(err) {
+			return nil, nil // Not an error if .gitignore doesn't exist
+		}
+		return nil, domain.Errorf(domain.ErrGitError, "failed to open .gitignore: %v", err)
 	}
 	defer f.Close()
 
@@ -74,6 +77,11 @@ func ParseGitignoreMarker(path string) ([]string, error) {
 			}
 			files = append(files, trimmed)
 		}
+	}
+
+	// Check for scanner errors (I/O issues during reading)
+	if err := scanner.Err(); err != nil {
+		return nil, domain.Errorf(domain.ErrGitError, "failed to parse .gitignore: %v", err)
 	}
 
 	if len(files) == 0 {

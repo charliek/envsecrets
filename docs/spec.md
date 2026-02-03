@@ -98,7 +98,7 @@ passphrase_command_args: ["op", "read", "op://Vault/envsecrets/password"]
 # Optional: Base64-encoded GCS service account JSON
 # Generate with: envsecrets encode /path/to/service-account.json
 # If omitted, uses Application Default Credentials
-gcs_credentials: ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3RfaWQiOiAibXktcHJvamVjdCIs...
+gcs_credentials: BASE64_ENCODED_GCS_CREDENTIALS
 ```
 
 ### Environment Variable Overrides
@@ -726,7 +726,7 @@ $ envsecrets encode ~/path/to/service-account.json
 
 ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIs...
 
-Add this to your ~/.envsecrets/config.yaml as 'gcp_credentials'
+Add this to your ~/.envsecrets/config.yaml as 'gcs_credentials'
 ```
 
 **Flags:**

@@ -68,7 +68,11 @@ func (o *Output) Verbose(format string, args ...interface{}) {
 }
 
 // PrintDryRunHeader prints the standard dry-run header message
+// Skips output in JSON mode to avoid polluting JSON output
 func (o *Output) PrintDryRunHeader() {
+	if o.json {
+		return
+	}
 	o.Println("Dry run - no changes will be made")
 	o.Println()
 }

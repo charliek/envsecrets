@@ -38,6 +38,14 @@ func ParseRepoString(repo string) (*domain.RepoInfo, error) {
 		return nil, domain.Errorf(domain.ErrInvalidArgs, "invalid repo name: only alphanumeric, hyphens, underscores, dots, and slashes allowed")
 	}
 
+	// Validate path segments to prevent traversal attacks (e.g., "..", empty segments)
+	nameSegments := strings.Split(parts[1], "/")
+	for _, segment := range nameSegments {
+		if segment == "" || segment == "." || segment == ".." {
+			return nil, domain.Errorf(domain.ErrInvalidArgs, "invalid repo name: empty or traversal segment not allowed")
+		}
+	}
+
 	return &domain.RepoInfo{Owner: parts[0], Name: parts[1]}, nil
 }
 
