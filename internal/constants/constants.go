@@ -42,6 +42,12 @@ const (
 	// keeping decryption time under 1 second on modern hardware.
 	// Files encrypted with work factor 17 remain backward compatible.
 	ScryptWorkFactor = 18
+
+	// ShortHashLength is the number of characters in a short commit hash
+	ShortHashLength = 7
+
+	// BytesPerKB is the number of bytes in a kilobyte
+	BytesPerKB = 1024
 )
 
 // Exit codes

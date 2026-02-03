@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -35,11 +34,7 @@ func TestPassphraseResolver_ResolveFromCommandArgs(t *testing.T) {
 	require.Equal(t, "secure-passphrase", pass)
 }
 
-func TestPassphraseResolver_CommandArgsPreferredOverLegacy(t *testing.T) {
-	// This test verifies that if both are somehow set (shouldn't happen due to validation),
-	// command_args would be preferred
-
-	// First test: only command_args set
+func TestPassphraseResolver_CommandArgsWorks(t *testing.T) {
 	cfg := &Config{
 		Bucket:                "test",
 		PassphraseCommandArgs: []string{"echo", "from-args"},
@@ -132,35 +127,4 @@ func TestPassphraseResolver_EnvTakesPrecedenceOverCommand(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, "from-env", pass, "env should take precedence over command")
-}
-
-// TestLegacyCommandShowsDeprecationWarning verifies the legacy command still works
-// Note: We can't easily test the warning output without capturing stderr
-func TestLegacyCommandWorks(t *testing.T) {
-	// Capture stderr to suppress the deprecation warning
-	oldStderr := os.Stderr
-	defer func() { os.Stderr = oldStderr }()
-
-	// Create a pipe to capture stderr
-	r, w, _ := os.Pipe()
-	os.Stderr = w
-
-	cfg := &Config{
-		Bucket:            "test",
-		PassphraseCommand: "echo legacy-pass",
-	}
-
-	resolver := NewPassphraseResolver(cfg)
-	pass, err := resolver.Resolve()
-
-	w.Close()
-	os.Stderr = oldStderr
-
-	// Read the captured output (we don't need to verify it, just that it works)
-	buf := make([]byte, 1024)
-	r.Read(buf)
-	r.Close()
-
-	require.NoError(t, err)
-	require.Equal(t, "legacy-pass", pass)
 }

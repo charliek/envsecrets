@@ -82,6 +82,27 @@ func (m *MockStorage) List(ctx context.Context, prefix string) ([]string, error)
 	return paths, nil
 }
 
+// ListWithMetadata implements Storage.ListWithMetadata
+func (m *MockStorage) ListWithMetadata(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	if m.ListError != nil {
+		return nil, m.ListError
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var objects []ObjectInfo
+	for path, data := range m.objects {
+		if strings.HasPrefix(path, prefix) {
+			objects = append(objects, ObjectInfo{
+				Name: path,
+				Size: int64(len(data)),
+			})
+		}
+	}
+	return objects, nil
+}
+
 // Delete implements Storage.Delete
 func (m *MockStorage) Delete(ctx context.Context, path string) error {
 	if m.DeleteError != nil {
@@ -104,6 +125,11 @@ func (m *MockStorage) Exists(ctx context.Context, path string) (bool, error) {
 	defer m.mu.RUnlock()
 	_, ok := m.objects[path]
 	return ok, nil
+}
+
+// Close implements Storage.Close
+func (m *MockStorage) Close() error {
+	return nil
 }
 
 // GetData returns the raw data for a path (for testing)

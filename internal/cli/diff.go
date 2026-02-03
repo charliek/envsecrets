@@ -123,7 +123,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printSimpleDiff(out *Output, old, new string) {
+func printSimpleDiff(out *ui.Output, old, new string) {
 	oldLines := strings.Split(old, "\n")
 	newLines := strings.Split(new, "\n")
 
@@ -152,6 +152,3 @@ func printSimpleDiff(out *Output, old, new string) {
 		}
 	}
 }
-
-// Output is a type alias for the UI output
-type Output = ui.Output

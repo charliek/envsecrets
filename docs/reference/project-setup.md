@@ -31,6 +31,48 @@ config/database.yaml
 config/api-keys.yaml
 ```
 
+### Repository Override
+
+You can override the auto-detected repository identity by adding a `repo:` directive:
+
+```
+repo: myorg/custom-name
+
+.env
+.env.local
+```
+
+This is useful when:
+- Your git remote URL doesn't match the desired storage path
+- You're working in a fork but want to share secrets with the upstream repo
+- You want a custom organization/repo structure in GCS
+
+Priority order for repo identification:
+1. `--repo` command-line flag (highest)
+2. `repo:` directive in `.envsecrets`
+3. Git remote URL detection (lowest)
+
+## Alternative: .gitignore Marker
+
+If you don't want a separate `.envsecrets` file, you can mark tracked files directly in your `.gitignore`:
+
+```gitignore
+node_modules/
+dist/
+
+# envsecrets
+.env
+.env.local
+.env.production
+
+# Logs
+*.log
+```
+
+Everything between `# envsecrets` and the next blank line or comment section is treated as tracked files.
+
+This approach keeps your tracked files and gitignore entries in one place.
+
 ## Project Identification
 
 envsecrets identifies your project using the git remote URL. The remote is parsed to extract the owner and repository name:

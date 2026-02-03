@@ -18,11 +18,7 @@ type Config struct {
 	// PassphraseEnv is the environment variable containing the passphrase
 	PassphraseEnv string `yaml:"passphrase_env,omitempty"`
 
-	// PassphraseCommand is a command to retrieve the passphrase (DEPRECATED: use passphrase_command_args)
-	// This uses shell execution and is kept for backward compatibility
-	PassphraseCommand string `yaml:"passphrase_command,omitempty"`
-
-	// PassphraseCommandArgs is the preferred way to specify a passphrase command
+	// PassphraseCommandArgs specifies a command to retrieve the passphrase
 	// It executes the command directly without shell interpolation
 	// Example: ["pass", "show", "envsecrets"]
 	PassphraseCommandArgs []string `yaml:"passphrase_command_args,omitempty"`
@@ -100,11 +96,6 @@ func (c *Config) Validate() error {
 		return domain.Errorf(domain.ErrInvalidConfig, "bucket is required")
 	}
 
-	// Validate that both passphrase command formats aren't set simultaneously
-	if c.PassphraseCommand != "" && len(c.PassphraseCommandArgs) > 0 {
-		return domain.Errorf(domain.ErrInvalidConfig, "cannot set both passphrase_command and passphrase_command_args")
-	}
-
 	// At least one passphrase method should be configured, but we allow
 	// interactive input as fallback, so this is not strictly required
 	return nil
@@ -117,7 +108,7 @@ func (c *Config) Path() string {
 
 // HasPassphraseConfig returns true if a passphrase retrieval method is configured
 func (c *Config) HasPassphraseConfig() bool {
-	return c.PassphraseEnv != "" || c.PassphraseCommand != "" || len(c.PassphraseCommandArgs) > 0
+	return c.PassphraseEnv != "" || len(c.PassphraseCommandArgs) > 0
 }
 
 // getConfigPath returns the config path from env var or default
@@ -155,14 +146,10 @@ func (c *Config) String() string {
 	if c.PassphraseEnv != "" {
 		passEnv = "[set]"
 	}
-	passCmd := ""
-	if c.PassphraseCommand != "" {
-		passCmd = "[set:deprecated]"
-	}
 	passCmdArgs := ""
 	if len(c.PassphraseCommandArgs) > 0 {
 		passCmdArgs = "[set]"
 	}
-	return fmt.Sprintf("Config{Bucket: %q, PassphraseEnv: %s, PassphraseCommand: %s, PassphraseCommandArgs: %s, GCSCredentials: %s}",
-		c.Bucket, passEnv, passCmd, passCmdArgs, creds)
+	return fmt.Sprintf("Config{Bucket: %q, PassphraseEnv: %s, PassphraseCommandArgs: %s, GCSCredentials: %s}",
+		c.Bucket, passEnv, passCmdArgs, creds)
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
 )
 
@@ -39,11 +40,6 @@ func NewOutputWithWriters(out, err io.Writer, verbose, jsonOutput bool) *Output 
 	}
 }
 
-// Print prints a message to stdout
-func (o *Output) Print(format string, args ...interface{}) {
-	fmt.Fprintf(o.out, format, args...)
-}
-
 // Println prints a message to stdout with a newline
 func (o *Output) Println(args ...interface{}) {
 	fmt.Fprintln(o.out, args...)
@@ -69,6 +65,16 @@ func (o *Output) Verbose(format string, args ...interface{}) {
 	if o.verbose {
 		fmt.Fprintf(o.err, format+"\n", args...)
 	}
+}
+
+// PrintDryRunHeader prints the standard dry-run header message
+// Skips output in JSON mode to avoid polluting JSON output
+func (o *Output) PrintDryRunHeader() {
+	if o.json {
+		return
+	}
+	o.Println("Dry run - no changes will be made")
+	o.Println()
 }
 
 // Success prints a success message
@@ -159,7 +165,15 @@ func firstLine(s string) string {
 	return s
 }
 
-// PrintFileStatus prints file status
+// TruncateHash truncates a hash to the standard short length for display
+func TruncateHash(hash string) string {
+	if len(hash) > constants.ShortHashLength {
+		return hash[:constants.ShortHashLength]
+	}
+	return hash
+}
+
+// PrintFileStatus prints file status with short indicator
 func (o *Output) PrintFileStatus(status domain.FileStatus) {
 	var indicator string
 	switch {
@@ -173,4 +187,20 @@ func (o *Output) PrintFileStatus(status domain.FileStatus) {
 		indicator = " "
 	}
 	fmt.Fprintf(o.out, " %s %s\n", indicator, status.Path)
+}
+
+// PrintFileStatusDetailed prints file status with detailed description
+func (o *Output) PrintFileStatusDetailed(status domain.FileStatus) {
+	var indicator string
+	switch {
+	case !status.LocalExists && status.CacheExists:
+		indicator = "(missing locally)"
+	case status.LocalExists && !status.CacheExists:
+		indicator = "(new)"
+	case status.Modified:
+		indicator = "(modified)"
+	default:
+		indicator = "(unchanged)"
+	}
+	fmt.Fprintf(o.out, "  %-30s %s\n", status.Path, indicator)
 }

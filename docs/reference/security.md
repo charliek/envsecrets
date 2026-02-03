@@ -13,15 +13,17 @@ envsecrets uses [age](https://age-encryption.org/) for encryption, a modern and 
 ## Data Flow
 
 ```
-Local Files → Age Encryption → Git Cache → GCS
+Local Files → Age Encryption → Local Git Cache → GCS
                   ↑
             Passphrase
 ```
 
 1. Plaintext files exist only in your project directory
-2. Files are encrypted with age before being written to the cache
-3. The cache contains only encrypted `.age` files
-4. Encrypted files are synced to GCS
+2. Files are encrypted with age before being written to the local cache
+3. The local cache (`~/.envsecrets/cache/`) is a git repository containing only encrypted `.age` files
+4. Encrypted files are synced to GCS (simple file storage, no git repos in GCS)
+
+**Note:** Version history is maintained in the local git cache. GCS stores only the encrypted files and a `HEAD` pointer to the latest commit. This simpler architecture has fewer failure modes than storing full git repositories in cloud storage.
 
 ## Passphrase Security
 
@@ -31,7 +33,7 @@ The passphrase is the only secret needed to decrypt your files.
 
 - Use a strong, unique passphrase (20+ characters recommended)
 - Store the passphrase in a password manager
-- Use `passphrase_command` to retrieve from a secure source
+- Use `passphrase_command_args` to retrieve from a secure source (see [Configuration](configuration.md))
 - Never commit the passphrase to git
 
 ### Passphrase Recovery

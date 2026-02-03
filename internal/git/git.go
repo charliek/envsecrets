@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -157,7 +158,7 @@ func (r *GoGitRepository) Log(n int) ([]domain.Commit, error) {
 		hash := c.Hash.String()
 		commits = append(commits, domain.Commit{
 			Hash:      hash,
-			ShortHash: hash[:7],
+			ShortHash: hash[:constants.ShortHashLength],
 			Message:   c.Message,
 			Author:    c.Author.Name,
 			Date:      c.Author.When,

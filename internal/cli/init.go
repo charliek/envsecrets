@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charliek/envsecrets/internal/config"
 	"github.com/charliek/envsecrets/internal/constants"
@@ -21,7 +22,65 @@ with your GCS bucket and passphrase settings.`,
 	RunE: runInit,
 }
 
+// parseShellArgs splits a command string into arguments, respecting quotes.
+// Handles both single and double quotes for arguments with spaces.
+func parseShellArgs(s string) ([]string, error) {
+	var args []string
+	var current strings.Builder
+	var inQuote rune
+	escaped := false
+
+	for _, r := range s {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+
+		switch {
+		case r == '\\' && inQuote != '\'':
+			escaped = true
+		case r == '"' || r == '\'':
+			if inQuote == 0 {
+				inQuote = r
+			} else if inQuote == r {
+				inQuote = 0
+			} else {
+				current.WriteRune(r)
+			}
+		case r == ' ' || r == '\t':
+			if inQuote != 0 {
+				current.WriteRune(r)
+			} else if current.Len() > 0 {
+				args = append(args, current.String())
+				current.Reset()
+			}
+		default:
+			current.WriteRune(r)
+		}
+	}
+
+	if inQuote != 0 {
+		return nil, fmt.Errorf("unclosed quote")
+	}
+
+	if current.Len() > 0 {
+		args = append(args, current.String())
+	}
+
+	if len(args) == 0 {
+		return nil, fmt.Errorf("no command specified")
+	}
+
+	return args, nil
+}
+
 func runInit(cmd *cobra.Command, args []string) error {
+	// Init requires interactive mode
+	if !ui.CanPrompt() {
+		return fmt.Errorf("init requires interactive mode")
+	}
+
 	prompt := ui.NewPrompt()
 	out := ui.NewOutput(verbose, jsonOut)
 
@@ -75,14 +134,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 		cfg.PassphraseEnv = envVar
 	case "2":
-		cmdStr, err := prompt.String("Command to retrieve passphrase", "")
+		out.Println("Enter command and arguments (space-separated, e.g., 'pass show envsecrets'):")
+		out.Println("Use quotes for arguments with spaces (e.g., 'op read \"my secret\"'):")
+		cmdStr, err := prompt.String("Command", "")
 		if err != nil {
 			return err
 		}
+		cmdStr = strings.TrimSpace(cmdStr)
 		if cmdStr == "" {
 			return fmt.Errorf("command is required")
 		}
-		cfg.PassphraseCommand = cmdStr
+		// Parse command string into args (handles quoted arguments)
+		args, err := parseShellArgs(cmdStr)
+		if err != nil {
+			return fmt.Errorf("invalid command: %w", err)
+		}
+		cfg.PassphraseCommandArgs = args
 	case "3":
 		// No passphrase config - will prompt each time
 		out.Println("Passphrase will be requested when needed.")

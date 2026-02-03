@@ -34,7 +34,8 @@ func SecureJoin(baseDir, relativePath string) (string, error) {
 	}
 
 	// Verify the result is actually within the base directory
-	if !strings.HasPrefix(safePath, baseDir) {
+	// Use path separator to prevent /home/user matching /home/user2
+	if safePath != baseDir && !strings.HasPrefix(safePath, baseDir+string(filepath.Separator)) {
 		return "", domain.Errorf(domain.ErrInvalidArgs, "path traversal attempt detected: %q", relativePath)
 	}
 

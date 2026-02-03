@@ -29,9 +29,8 @@ func NewPassphraseResolver(cfg *Config) *PassphraseResolver {
 // Resolve attempts to get the passphrase using the configured method
 // Resolution order:
 // 1. Environment variable (if passphrase_env is set)
-// 2. Command args (if passphrase_command_args is set) - preferred
-// 3. Command string (if passphrase_command is set) - deprecated
-// 4. Interactive prompt (if terminal is available)
+// 2. Command args (if passphrase_command_args is set)
+// 3. Interactive prompt (if terminal is available)
 func (r *PassphraseResolver) Resolve() (string, error) {
 	// Try environment variable first
 	if r.config.PassphraseEnv != "" {
@@ -40,19 +39,9 @@ func (r *PassphraseResolver) Resolve() (string, error) {
 		}
 	}
 
-	// Try command args (preferred, secure method)
+	// Try command args
 	if len(r.config.PassphraseCommandArgs) > 0 {
 		pass, err := r.runCommandArgs()
-		if err != nil {
-			return "", domain.Errorf(domain.ErrNoPassphrase, "passphrase command failed: %v", err)
-		}
-		return pass, nil
-	}
-
-	// Try legacy command string (deprecated - uses shell)
-	if r.config.PassphraseCommand != "" {
-		fmt.Fprintln(os.Stderr, "Warning: passphrase_command is deprecated and will be removed in v2.0. Please migrate to passphrase_command_args.")
-		pass, err := r.runCommandLegacy()
 		if err != nil {
 			return "", domain.Errorf(domain.ErrNoPassphrase, "passphrase command failed: %v", err)
 		}
@@ -78,36 +67,6 @@ func (r *PassphraseResolver) runCommandArgs() (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("passphrase command timed out after %v", PassphraseCommandTimeout)
-		}
-		errMsg := strings.TrimSpace(stderr.String())
-		if errMsg != "" {
-			return "", fmt.Errorf("%v: %s", err, errMsg)
-		}
-		return "", err
-	}
-
-	pass := strings.TrimSpace(stdout.String())
-	if pass == "" {
-		return "", fmt.Errorf("command returned empty passphrase")
-	}
-
-	return pass, nil
-}
-
-// runCommandLegacy executes the passphrase command using shell (DEPRECATED)
-// This method is kept for backward compatibility but should not be used for new configs
-func (r *PassphraseResolver) runCommandLegacy() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), PassphraseCommandTimeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "sh", "-c", r.config.PassphraseCommand)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

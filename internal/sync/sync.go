@@ -46,6 +46,21 @@ type PushOptions struct {
 	Force bool
 }
 
+// ConflictAction represents how to handle a file conflict
+type ConflictAction int
+
+const (
+	// ConflictOverwrite replaces local file with remote version
+	ConflictOverwrite ConflictAction = iota
+	// ConflictSkip keeps the local file unchanged
+	ConflictSkip
+	// ConflictAbort cancels the entire pull operation
+	ConflictAbort
+)
+
+// ConflictResolver is called for each conflicting file to determine the action
+type ConflictResolver func(filename string) (ConflictAction, error)
+
 // PullOptions configures a pull operation.
 type PullOptions struct {
 	// Ref specifies a specific version (commit hash) to pull
@@ -53,6 +68,11 @@ type PullOptions struct {
 	// Force overwrites local files that have different content without prompting.
 	// When false, pull will abort with ErrConflict if local files would be overwritten.
 	Force bool
+	// DryRun shows what would be pulled without actually pulling
+	DryRun bool
+	// ConflictResolver is called for each conflicting file when Force is false.
+	// If nil and conflicts exist, the pull will abort with ErrConflict.
+	ConflictResolver ConflictResolver
 }
 
 // GetSyncStatus returns the sync status between local and remote

@@ -3,12 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/config"
 	"github.com/charliek/envsecrets/internal/crypto"
 	"github.com/charliek/envsecrets/internal/domain"
+	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/spf13/cobra"
 )
@@ -25,7 +25,8 @@ your passphrase is correct before making changes.`,
 }
 
 func runVerify(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	ctx, cancel := signalContext()
+	defer cancel()
 	out := GetOutput()
 
 	// Get passphrase
@@ -46,6 +47,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer store.Close()
 
 	// List all repos
 	objects, err := store.List(ctx, "")
@@ -54,14 +56,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	}
 
 	// Extract unique repos
-	repos := make(map[string]bool)
-	for _, obj := range objects {
-		parts := strings.Split(obj, "/")
-		if len(parts) >= 2 {
-			repo := parts[0] + "/" + parts[1]
-			repos[repo] = true
-		}
-	}
+	repos := extractReposFromObjects(objects)
 
 	if len(repos) == 0 {
 		out.Println("No repositories found")
@@ -74,7 +69,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 	results := make(map[string]verifyResult)
 
 	for repoPath := range repos {
-		repoInfo, err := parseRepoPath(repoPath)
+		repoInfo, err := project.ParseRepoString(repoPath)
 		if err != nil {
 			results[repoPath] = verifyResult{Error: "invalid repo path"}
 			continue

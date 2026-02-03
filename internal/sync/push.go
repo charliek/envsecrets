@@ -1,9 +1,11 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
 )
 
@@ -67,7 +69,7 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 			}
 
 			// Skip if unchanged
-			if string(existingDecrypted) == string(content) {
+			if bytes.Equal(existingDecrypted, content) {
 				continue
 			}
 			result.FilesUpdated++
@@ -110,7 +112,7 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 	if !opts.Force && initialRemoteHead != "" {
 		currentRemoteHead, err := s.cache.GetRemoteHead(ctx)
 		if err == nil && currentRemoteHead != initialRemoteHead {
-			return nil, domain.Errorf(domain.ErrRemoteChanged, "remote changed during push (expected %s, got %s); run 'envsecrets pull' first or use --force to override", initialRemoteHead[:7], currentRemoteHead[:7])
+			return nil, domain.Errorf(domain.ErrRemoteChanged, "remote changed during push (expected %s, got %s); run 'envsecrets pull' first or use --force to override", initialRemoteHead[:constants.ShortHashLength], currentRemoteHead[:constants.ShortHashLength])
 		}
 	}
 

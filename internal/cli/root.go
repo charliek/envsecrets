@@ -21,9 +21,11 @@ const (
 
 var (
 	// Global flags
-	cfgFile string
-	verbose bool
-	jsonOut bool
+	cfgFile        string
+	verbose        bool
+	jsonOut        bool
+	repo           string
+	nonInteractive bool
 
 	// Shared state
 	cfg    *config.Config
@@ -43,6 +45,9 @@ providing secure team-wide access with version history.`,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		// Initialize output handler
 		output = ui.NewOutput(verbose, jsonOut)
+
+		// Set non-interactive mode
+		ui.SetNonInteractive(nonInteractive)
 
 		// Skip config loading for commands that don't need it
 		if !needsConfig(cmd) {
@@ -98,6 +103,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ~/.envsecrets/config.yaml)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "verbose output")
 	rootCmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "output in JSON format")
+	rootCmd.PersistentFlags().StringVarP(&repo, "repo", "r", "", "override repository (owner/name)")
+	rootCmd.PersistentFlags().BoolVar(&nonInteractive, "non-interactive", false, "disable interactive prompts (for CI/CD)")
 
 	// Set version template
 	rootCmd.SetVersionTemplate("envsecrets {{.Version}}\n")
@@ -129,6 +136,11 @@ func GetOutput() *ui.Output {
 	return output
 }
 
+// GetRepo returns the repo override flag value (for use by subcommands)
+func GetRepo() string {
+	return repo
+}
+
 // ExitWithError prints an error and exits with the appropriate code
 func ExitWithError(err error) {
 	if output != nil {
@@ -156,6 +168,11 @@ func signalContext() (context.Context, context.CancelFunc) {
 		case <-ctx.Done():
 		}
 		signal.Stop(c)
+		// Drain any pending signal to prevent goroutine leak
+		select {
+		case <-c:
+		default:
+		}
 	}()
 
 	// Return a combined cancel function

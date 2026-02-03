@@ -1,6 +1,7 @@
 package project
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 
@@ -61,6 +62,19 @@ func (d *Discovery) ProjectRoot() string {
 
 // RepoInfo returns the repository information
 func (d *Discovery) RepoInfo() (*domain.RepoInfo, error) {
+	// First check .envsecrets for repo: directive
+	envConfig, err := ParseEnvSecretsFile(d.EnvSecretsFile())
+	if err != nil {
+		// If file doesn't exist, fall back to git detection
+		// For any other error (parse error, invalid config), surface it
+		if !errors.Is(err, domain.ErrNoEnvFiles) && !os.IsNotExist(err) {
+			return nil, err
+		}
+	} else if envConfig.RepoOverride != "" {
+		return ParseRepoString(envConfig.RepoOverride)
+	}
+
+	// Fall back to git remote detection
 	repo, err := git.PlainOpen(d.projectRoot)
 	if err != nil {
 		return nil, domain.Errorf(domain.ErrGitError, "failed to open repository: %v", err)
@@ -109,18 +123,34 @@ func (d *Discovery) EnvSecretsFile() string {
 
 // EnvFiles returns the list of tracked environment files
 func (d *Discovery) EnvFiles() ([]string, error) {
+	// Try .envsecrets file first
 	envFile := d.EnvSecretsFile()
-
-	files, err := ParseEnvSecretsFile(envFile)
-	if err != nil {
-		return nil, err
+	config, envErr := ParseEnvSecretsFile(envFile)
+	if envErr != nil {
+		// If it's not a "file missing" error, surface it
+		if !errors.Is(envErr, domain.ErrNoEnvFiles) && !os.IsNotExist(envErr) {
+			return nil, envErr
+		}
+	} else if len(config.Files) > 0 {
+		return config.Files, nil
 	}
 
-	if len(files) == 0 {
-		return nil, domain.ErrNoFilesTracked
+	// Fall back to .gitignore marker
+	gitignorePath := filepath.Join(d.projectRoot, ".gitignore")
+	files, gitErr := ParseGitignoreMarker(gitignorePath)
+	if gitErr != nil {
+		return nil, gitErr
+	}
+	if len(files) > 0 {
+		return files, nil
 	}
 
-	return files, nil
+	// No tracked files found
+	if config == nil {
+		return nil, domain.ErrNoEnvFiles
+	}
+
+	return nil, domain.ErrNoFilesTracked
 }
 
 // secureJoinPath safely joins the project root with a relative path,

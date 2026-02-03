@@ -15,7 +15,7 @@ bucket: my-envsecrets-bucket
 # Passphrase configuration (choose one method)
 passphrase_env: ENVSECRETS_PASSPHRASE
 # OR
-passphrase_command: op read "op://Vault/envsecrets/password"
+passphrase_command_args: ["op", "read", "op://Vault/envsecrets/password"]
 
 # Base64-encoded GCS service account JSON
 gcs_credentials: eyJ0eXBlIjoic2VydmljZ...
@@ -27,7 +27,7 @@ gcs_credentials: eyJ0eXBlIjoic2VydmljZ...
 |-------|----------|-------------|
 | `bucket` | Yes | GCS bucket name for storage |
 | `passphrase_env` | One of passphrase options | Environment variable containing passphrase |
-| `passphrase_command` | One of passphrase options | Command to retrieve passphrase |
+| `passphrase_command_args` | One of passphrase options | Command and arguments to retrieve passphrase |
 | `gcs_credentials` | No* | Base64-encoded service account JSON |
 
 *If `gcs_credentials` is not set, Application Default Credentials are used.
@@ -49,7 +49,7 @@ export ENVSECRETS_PASSPHRASE="your-secure-passphrase"
 ### Command
 
 ```yaml
-passphrase_command: op read "op://Vault/envsecrets/password"
+passphrase_command_args: ["op", "read", "op://Vault/envsecrets/password"]
 ```
 
 The command is executed and its stdout is used as the passphrase. Works with:
@@ -58,6 +58,19 @@ The command is executed and its stdout is used as the passphrase. Works with:
 - Bitwarden CLI (`bw`)
 - AWS Secrets Manager
 - Any command that outputs a passphrase
+
+Example configurations:
+
+```yaml
+# 1Password CLI
+passphrase_command_args: ["op", "read", "op://Vault/envsecrets/password"]
+
+# pass (password-store)
+passphrase_command_args: ["pass", "show", "envsecrets"]
+
+# macOS Keychain
+passphrase_command_args: ["security", "find-generic-password", "-s", "envsecrets", "-w"]
+```
 
 ### Interactive
 
