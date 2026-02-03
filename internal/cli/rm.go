@@ -1,14 +1,19 @@
 package cli
 
 import (
-	"context"
 	"errors"
+	"fmt"
 
 	"github.com/charliek/envsecrets/internal/domain"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/sync"
 	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
+)
+
+var (
+	rmDryRun bool
+	rmYes    bool
 )
 
 var rmCmd = &cobra.Command{
@@ -22,16 +27,27 @@ The local file is not deleted.`,
 	RunE: runRm,
 }
 
+func init() {
+	rmCmd.Flags().BoolVar(&rmDryRun, "dry-run", false, "show what would be removed without removing")
+	rmCmd.Flags().BoolVarP(&rmYes, "yes", "y", false, "skip confirmation prompt")
+}
+
 func runRm(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	ctx, cancel := signalContext()
+	defer cancel()
 	out := GetOutput()
 	filename := args[0]
+
+	if rmDryRun {
+		out.PrintDryRunHeader()
+	}
 
 	// Create project context
 	pc, err := NewProjectContext(ctx, cfg)
 	if err != nil {
 		return err
 	}
+	defer pc.Close()
 
 	// Check if file is tracked
 	tracked, err := project.IsTracked(pc.Discovery.EnvSecretsFile(), filename)
@@ -44,16 +60,26 @@ func runRm(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if rmDryRun {
+		out.Printf("Would remove %s from tracking\n", filename)
+		out.Println("Local file would not be deleted.")
+		return nil
+	}
+
 	// Confirm removal
-	if ui.IsInteractive() {
-		prompt := ui.NewPrompt()
-		confirmed, err := prompt.Confirm("Remove "+filename+" from tracking?", false)
-		if err != nil {
-			return err
-		}
-		if !confirmed {
-			out.Println("Aborted.")
-			return nil
+	if !rmYes {
+		if ui.CanPrompt() {
+			prompt := ui.NewPrompt()
+			confirmed, err := prompt.Confirm("Remove "+filename+" from tracking?", false)
+			if err != nil {
+				return err
+			}
+			if !confirmed {
+				out.Println("Aborted.")
+				return nil
+			}
+		} else {
+			return fmt.Errorf("rm requires confirmation; use --yes in non-interactive mode")
 		}
 	}
 

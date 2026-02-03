@@ -169,6 +169,13 @@ func (s *RetryingStorage) List(ctx context.Context, prefix string) ([]string, er
 	})
 }
 
+// ListWithMetadata implements Storage.ListWithMetadata with retry
+func (s *RetryingStorage) ListWithMetadata(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	return WithRetry(ctx, s.cfg, func() ([]ObjectInfo, error) {
+		return s.inner.ListWithMetadata(ctx, prefix)
+	})
+}
+
 // Delete implements Storage.Delete with retry
 func (s *RetryingStorage) Delete(ctx context.Context, path string) error {
 	return WithRetryNoResult(ctx, s.cfg, func() error {

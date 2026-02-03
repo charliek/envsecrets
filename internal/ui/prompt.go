@@ -5,9 +5,27 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"golang.org/x/term"
 )
+
+// nonInteractiveMode tracks whether prompts should be disabled.
+// Uses atomic.Bool for thread-safe access from concurrent operations.
+var nonInteractiveMode atomic.Bool
+
+// SetNonInteractive sets non-interactive mode (disables prompts).
+// This function is thread-safe.
+func SetNonInteractive(v bool) {
+	nonInteractiveMode.Store(v)
+}
+
+// CanPrompt returns true if interactive prompts are allowed
+// (terminal is available and non-interactive mode is not set).
+// This function is thread-safe.
+func CanPrompt() bool {
+	return !nonInteractiveMode.Load() && IsInteractive()
+}
 
 // Prompt handles interactive prompts
 type Prompt struct {
@@ -94,6 +112,10 @@ func (p *Prompt) Password(message string) (string, error) {
 
 // Select asks user to select from a list of options
 func (p *Prompt) Select(message string, options []string) (int, error) {
+	if len(options) == 0 {
+		return -1, fmt.Errorf("no options provided")
+	}
+
 	fmt.Fprintln(os.Stderr, message)
 	for i, opt := range options {
 		fmt.Fprintf(os.Stderr, "  %d. %s\n", i+1, opt)
@@ -116,4 +138,25 @@ func (p *Prompt) Select(message string, options []string) (int, error) {
 // IsInteractive returns true if stdin is a terminal
 func IsInteractive() bool {
 	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// ConflictChoice prompts the user to choose how to handle a file conflict
+// Returns "o" for overwrite, "s" for skip, or "a" for abort
+func (p *Prompt) ConflictChoice(filename string) (string, error) {
+	fmt.Fprintf(os.Stderr, "%s exists locally and differs from remote.\n", filename)
+	fmt.Fprint(os.Stderr, "  [o]verwrite / [s]kip / [a]bort? ")
+
+	input, err := p.reader.ReadString('\n')
+	if err != nil {
+		return "", err
+	}
+
+	switch strings.TrimSpace(strings.ToLower(input)) {
+	case "o", "overwrite":
+		return "o", nil
+	case "s", "skip":
+		return "s", nil
+	default:
+		return "a", nil
+	}
 }

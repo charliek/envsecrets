@@ -37,9 +37,13 @@ When developing in remote containers (e.g., via the "shed" workflow), projects o
 │                         Developer Machine                           │
 │                                                                     │
 │  ~/.envsecrets/config.yaml                                          │
-│    - GCP credentials (base64)                                       │
-│    - Passphrase (optional)                                          │
+│    - GCS credentials (base64, optional)                             │
+│    - Passphrase config (env var, command, or prompt)                │
 │    - Bucket name                                                    │
+│                                                                     │
+│  ~/.envsecrets/cache/owner/repo/                                    │
+│    - .git/              (local git repo for version history)        │
+│    - *.age              (encrypted files)                           │
 │                                                                     │
 │  ~/code/myproject/                                                  │
 │    - .env              ←─── envsecrets pull                         │
@@ -56,12 +60,12 @@ When developing in remote containers (e.g., via the "shed" workflow), projects o
 │  gs://bucket-name/                                                  │
 │  ├── charliek/                                                      │
 │  │   └── stbot/                                                     │
-│  │       ├── .git/              (git repo for history)              │
+│  │       ├── HEAD               (points to latest commit)           │
 │  │       ├── .env.age           (age encrypted)                     │
 │  │       └── .env.local.age     (age encrypted)                     │
 │  └── smartthings/                                                   │
 │      └── platform/                                                  │
-│          ├── .git/                                                  │
+│          ├── HEAD                                                   │
 │          └── .env.age                                               │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -80,19 +84,21 @@ When developing in remote containers (e.g., via the "shed" workflow), projects o
 ### Config File Format
 
 ```yaml
-# GCP project ID
-project: my-gcp-project
-
 # GCS bucket name for storing encrypted secrets
 bucket: my-secrets-bucket
 
-# Base64-encoded GCP service account JSON
-# Generate with: envsecrets encode /path/to/service-account.json
-gcp_credentials: ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3RfaWQiOiAibXktcHJvamVjdCIs...
+# Passphrase configuration (choose one method):
 
-# Optional: age passphrase for encryption/decryption
-# If omitted, will prompt at runtime
-passphrase: my-secret-passphrase
+# Option 1: Environment variable name containing the passphrase
+passphrase_env: ENVSECRETS_PASSPHRASE
+
+# Option 2: Command to retrieve passphrase (no shell interpolation)
+passphrase_command_args: ["op", "read", "op://Vault/envsecrets/password"]
+
+# Optional: Base64-encoded GCS service account JSON
+# Generate with: envsecrets encode /path/to/service-account.json
+# If omitted, uses Application Default Credentials
+gcs_credentials: ewogICJ0eXBlIjogInNlcnZpY2VfYWNjb3VudCIsCiAgInByb2plY3RfaWQiOiAibXktcHJvamVjdCIs...
 ```
 
 ### Environment Variable Overrides
@@ -104,10 +110,9 @@ passphrase: my-secret-passphrase
 
 ### Passphrase Resolution Order
 
-1. `--passphrase` flag (if implemented)
-2. `ENVSECRETS_PASSPHRASE` environment variable
-3. `passphrase` field in config.yaml
-4. Interactive prompt
+1. Environment variable specified by `passphrase_env` config field
+2. Command specified by `passphrase_command_args` config field
+3. Interactive prompt
 
 ---
 
@@ -195,19 +200,15 @@ Can be overridden via:
 gs://bucket-name/
 ├── owner1/
 │   ├── repo1/
-│   │   ├── .git/
-│   │   │   ├── HEAD
-│   │   │   ├── config
-│   │   │   ├── objects/
-│   │   │   └── refs/
+│   │   ├── HEAD              (commit hash pointer)
 │   │   ├── .env.age
 │   │   └── .env.local.age
 │   └── repo2/
-│       ├── .git/
+│       ├── HEAD
 │       └── .env.age
 └── owner2/
     └── repo3/
-        ├── .git/
+        ├── HEAD
         ├── .env.age
         └── config/
             └── secrets.yaml.age
@@ -218,12 +219,13 @@ gs://bucket-name/
 - Original: `.env` → Stored as: `.env.age`
 - Original: `config/secrets.yaml` → Stored as: `config/secrets.yaml.age`
 
-### Git Repository
+### Version History
 
-Each project directory in the bucket is a bare-ish git repository:
-- Tracks history of all encrypted files
-- Commit messages capture change descriptions
-- Standard git operations (log, diff, revert) work on encrypted content
+Version history is maintained in the local cache (`~/.envsecrets/cache/owner/repo/`), which is a git repository. The GCS bucket stores:
+- Encrypted files (`.age` suffix)
+- A `HEAD` file pointing to the latest commit hash
+
+This simpler architecture has fewer failure modes than storing full git repos in GCS.
 
 ---
 
@@ -295,11 +297,11 @@ Compromise of either alone is insufficient to read secrets.
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--repo` | `-r` | Override repo identifier |
-| `--config` | `-c` | Path to config file |
+| `--config` | | Path to config file |
 | `--verbose` | `-v` | Verbose output |
-| `--quiet` | `-q` | Minimal output |
+| `--json` | | Output in JSON format (for scripting) |
 | `--dry-run` | | Show what would happen without doing it |
-| `--non-interactive` | | Fail instead of prompting (for scripts) |
+| `--non-interactive` | | Fail instead of prompting |
 
 ---
 
@@ -406,9 +408,6 @@ $ envsecrets pull .env
 # Pull specific version
 $ envsecrets pull --ref abc1234
 
-# Pull to different directory
-$ envsecrets pull --out ./secrets/
-
 # Overwrite without prompting
 $ envsecrets pull --force
 
@@ -420,7 +419,6 @@ $ envsecrets pull --dry-run
 | Flag | Short | Description |
 |------|-------|-------------|
 | `--ref` | | Pull specific commit |
-| `--out` | `-o` | Output directory (default: current) |
 | `--force` | `-f` | Overwrite existing files without prompting |
 | `--dry-run` | | Show what would be pulled |
 
@@ -1028,13 +1026,21 @@ Future optimization: persistent cache at `~/.envsecrets/cache/` to avoid repeate
 | Code | Meaning |
 |------|---------|
 | 0 | Success |
-| 1 | General error |
-| 2 | Config error (missing, invalid) |
-| 3 | Auth error (GCP credentials) |
-| 4 | Encryption error (wrong passphrase) |
-| 5 | Network error (GCS unreachable) |
-| 6 | Git error |
-| 10 | User cancelled |
+| 1 | Not configured (config file missing or invalid) |
+| 2 | Not in a git repository |
+| 3 | No .envsecrets file found or no files tracked |
+| 4 | Conflict between local and remote |
+| 5 | Decryption failed (wrong passphrase or corrupted data) |
+| 6 | Upload failed |
+| 7 | Download failed |
+| 8 | Invalid configuration |
+| 9 | GCS error |
+| 10 | Git error |
+| 11 | User cancelled operation |
+| 12 | Invalid arguments |
+| 13 | File or repository not found |
+| 14 | Permission denied |
+| 99 | Unknown error |
 
 ### Common Error Messages
 

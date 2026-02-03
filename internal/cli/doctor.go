@@ -71,6 +71,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 		out.Printf("  Error: %v\n", err)
 		allOK = false
 	} else {
+		defer store.Close()
 		// Try to list objects to verify access
 		_, err := store.List(ctx, "")
 		if err != nil {
@@ -85,16 +86,15 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// Check passphrase availability
 	out.Printf("Passphrase: ")
 	resolver := config.NewPassphraseResolver(cfg)
-	_, err = resolver.Resolve()
+	passphrase, err := resolver.Resolve()
 	if err != nil {
 		out.Println("NOT AVAILABLE")
 		if cfg.PassphraseEnv != "" {
 			out.Printf("  Set environment variable: %s\n", cfg.PassphraseEnv)
-		} else if cfg.PassphraseCommand != "" {
-			// Don't show the actual command as it may contain sensitive info
+		} else if len(cfg.PassphraseCommandArgs) > 0 {
 			out.Println("  Passphrase command failed to execute")
 		} else {
-			out.Println("  Configure passphrase_env or passphrase_command in config")
+			out.Println("  Configure passphrase_env or passphrase_command_args in config")
 		}
 		allOK = false
 	} else {
@@ -102,31 +102,32 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 
 		// Test encryption/decryption
 		out.Printf("Encryption: ")
-		passphrase, _ := resolver.Resolve()
-		encrypter, err := crypto.NewAgeEncrypter(passphrase)
-		if err != nil {
-			out.Println("FAILED")
-			out.Printf("  Error: %v\n", err)
-			allOK = false
-		} else {
-			testData := []byte("test encryption")
-			encrypted, err := encrypter.Encrypt(testData)
+		{
+			encrypter, err := crypto.NewAgeEncrypter(passphrase)
 			if err != nil {
 				out.Println("FAILED")
-				out.Printf("  Encrypt error: %v\n", err)
+				out.Printf("  Error: %v\n", err)
 				allOK = false
 			} else {
-				decrypted, err := encrypter.Decrypt(encrypted)
+				testData := []byte("test encryption")
+				encrypted, err := encrypter.Encrypt(testData)
 				if err != nil {
 					out.Println("FAILED")
-					out.Printf("  Decrypt error: %v\n", err)
-					allOK = false
-				} else if string(decrypted) != string(testData) {
-					out.Println("FAILED")
-					out.Println("  Round-trip verification failed")
+					out.Printf("  Encrypt error: %v\n", err)
 					allOK = false
 				} else {
-					out.Println("OK")
+					decrypted, err := encrypter.Decrypt(encrypted)
+					if err != nil {
+						out.Println("FAILED")
+						out.Printf("  Decrypt error: %v\n", err)
+						allOK = false
+					} else if string(decrypted) != string(testData) {
+						out.Println("FAILED")
+						out.Println("  Round-trip verification failed")
+						allOK = false
+					} else {
+						out.Println("OK")
+					}
 				}
 			}
 		}

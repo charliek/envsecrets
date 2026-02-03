@@ -61,6 +61,13 @@ func (d *Discovery) ProjectRoot() string {
 
 // RepoInfo returns the repository information
 func (d *Discovery) RepoInfo() (*domain.RepoInfo, error) {
+	// First check .envsecrets for repo: directive
+	envConfig, err := ParseEnvSecretsFile(d.EnvSecretsFile())
+	if err == nil && envConfig.RepoOverride != "" {
+		return ParseRepoString(envConfig.RepoOverride)
+	}
+
+	// Fall back to git remote detection
 	repo, err := git.PlainOpen(d.projectRoot)
 	if err != nil {
 		return nil, domain.Errorf(domain.ErrGitError, "failed to open repository: %v", err)
@@ -109,18 +116,26 @@ func (d *Discovery) EnvSecretsFile() string {
 
 // EnvFiles returns the list of tracked environment files
 func (d *Discovery) EnvFiles() ([]string, error) {
+	// Try .envsecrets file first
 	envFile := d.EnvSecretsFile()
-
-	files, err := ParseEnvSecretsFile(envFile)
-	if err != nil {
-		return nil, err
+	config, err := ParseEnvSecretsFile(envFile)
+	if err == nil && len(config.Files) > 0 {
+		return config.Files, nil
 	}
 
-	if len(files) == 0 {
-		return nil, domain.ErrNoFilesTracked
+	// Fall back to .gitignore marker
+	gitignorePath := filepath.Join(d.projectRoot, ".gitignore")
+	files, err := ParseGitignoreMarker(gitignorePath)
+	if err == nil && len(files) > 0 {
+		return files, nil
 	}
 
-	return files, nil
+	// If we had an error from .envsecrets (other than ErrNoEnvFiles), return it
+	if config == nil {
+		return nil, domain.ErrNoEnvFiles
+	}
+
+	return nil, domain.ErrNoFilesTracked
 }
 
 // secureJoinPath safely joins the project root with a relative path,

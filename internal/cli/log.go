@@ -1,8 +1,6 @@
 package cli
 
 import (
-	"context"
-
 	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +25,8 @@ func init() {
 }
 
 func runLog(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	ctx, cancel := signalContext()
+	defer cancel()
 	out := GetOutput()
 
 	// Create project context
@@ -35,6 +34,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer pc.Close()
 
 	// Ensure cache is synced
 	if err := pc.Cache.SyncFromStorage(ctx); err != nil {

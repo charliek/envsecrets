@@ -60,6 +60,7 @@ func (lr *LimitedReader) Read(p []byte) (n int, err error) {
 // FormatSize returns a human-readable size string.
 func FormatSize(bytes int64) string {
 	const unit = 1024
+	const units = "KMGTPE"
 	if bytes < unit {
 		return fmt.Sprintf("%d B", bytes)
 	}
@@ -68,5 +69,8 @@ func FormatSize(bytes int64) string {
 		div *= unit
 		exp++
 	}
-	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
+	if exp >= len(units) {
+		exp = len(units) - 1 // Cap at exabytes
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), units[exp])
 }

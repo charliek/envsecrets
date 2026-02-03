@@ -4,6 +4,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
 )
 
@@ -79,7 +80,7 @@ func (m *MockRepository) Commit(message string) (string, error) {
 	hash := generateMockHash()
 	commit := domain.Commit{
 		Hash:      hash,
-		ShortHash: hash[:7],
+		ShortHash: hash[:constants.ShortHashLength],
 		Message:   message,
 		Author:    "test",
 		Date:      time.Now(),

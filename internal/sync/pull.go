@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 
@@ -72,7 +73,7 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 		existingContent, err := s.discovery.ReadFile(file)
 		fileExists := err == nil
 
-		if fileExists && string(existingContent) == string(decrypted) {
+		if fileExists && bytes.Equal(existingContent, decrypted) {
 			// File unchanged
 			result.FilesSkipped++
 			continue
@@ -90,9 +91,55 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 		})
 	}
 
-	// If there are conflicts and --force is not set, abort
-	if len(result.FilesWithConflicts) > 0 && !opts.Force {
-		return result, domain.Errorf(domain.ErrConflict, "local files would be overwritten: %v; use --force to overwrite", result.FilesWithConflicts)
+	// Handle conflicts
+	if len(result.FilesWithConflicts) > 0 && !opts.Force && !opts.DryRun {
+		if opts.ConflictResolver == nil {
+			// No resolver - abort (current behavior)
+			return result, domain.Errorf(domain.ErrConflict, "local files would be overwritten: %v; use --force to overwrite", result.FilesWithConflicts)
+		}
+
+		// Resolve each conflict
+		resolvedSkips := make(map[string]bool)
+		for _, file := range result.FilesWithConflicts {
+			action, err := opts.ConflictResolver(file)
+			if err != nil {
+				return result, fmt.Errorf("conflict resolution failed for %s: %w", file, err)
+			}
+			switch action {
+			case ConflictAbort:
+				return result, domain.ErrUserCancelled
+			case ConflictSkip:
+				resolvedSkips[file] = true
+			case ConflictOverwrite:
+				// Do nothing, file will be written
+			default:
+				return result, fmt.Errorf("invalid conflict action %d for %s", action, file)
+			}
+		}
+
+		// Filter filesToWrite to exclude skipped files
+		var filtered []fileToWrite
+		for _, ftw := range filesToWrite {
+			if resolvedSkips[ftw.file] {
+				result.FilesSkippedConflict++
+				continue
+			}
+			filtered = append(filtered, ftw)
+		}
+		filesToWrite = filtered
+		result.FilesWithConflicts = nil
+	}
+
+	// In dry-run mode, just count what would be written without actually writing
+	if opts.DryRun {
+		for _, ftw := range filesToWrite {
+			if ftw.isNew {
+				result.FilesCreated++
+			} else {
+				result.FilesUpdated++
+			}
+		}
+		return result, nil
 	}
 
 	// Second pass: write files

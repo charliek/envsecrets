@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/config"
@@ -23,16 +24,36 @@ type ProjectContext struct {
 
 // NewProjectContext creates a new project context with all required components
 func NewProjectContext(ctx context.Context, cfg *config.Config) (*ProjectContext, error) {
-	// Discover project
-	discovery, err := project.NewDiscovery("")
-	if err != nil {
-		return nil, err
-	}
+	repoOverride := GetRepo()
 
-	// Get repo info
-	repoInfo, err := discovery.RepoInfo()
-	if err != nil {
-		return nil, err
+	var repoInfo *domain.RepoInfo
+	var discovery *project.Discovery
+
+	if repoOverride != "" {
+		// Use override - parse the provided repo string
+		var err error
+		repoInfo, err = project.ParseRepoString(repoOverride)
+		if err != nil {
+			return nil, err
+		}
+		// Still try to get discovery for EnvFiles(), but it may fail if not in git repo
+		discovery, err = project.NewDiscovery("")
+		if err != nil {
+			// Log at verbose level - this is expected when not in a git repo
+			out := GetOutput()
+			out.Verbose("Project discovery unavailable: %v", err)
+		}
+	} else {
+		// Normal discovery
+		var err error
+		discovery, err = project.NewDiscovery("")
+		if err != nil {
+			return nil, err
+		}
+		repoInfo, err = discovery.RepoInfo()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Create storage client with retry wrapper
@@ -40,23 +61,35 @@ func NewProjectContext(ctx context.Context, cfg *config.Config) (*ProjectContext
 	if err != nil {
 		return nil, err
 	}
+
+	// Ensure cleanup on error after this point
+	var returnErr error
+	defer func() {
+		if returnErr != nil {
+			gcsStore.Close()
+		}
+	}()
+
 	store := storage.NewRetryingStorage(gcsStore, storage.DefaultRetryConfig())
 
 	// Resolve passphrase and create encrypter
 	resolver := config.NewPassphraseResolver(cfg)
 	passphrase, err := resolver.Resolve()
 	if err != nil {
+		returnErr = err
 		return nil, err
 	}
 
 	encrypter, err := crypto.NewAgeEncrypter(passphrase)
 	if err != nil {
+		returnErr = err
 		return nil, err
 	}
 
 	// Create cache
 	cacheRepo, err := cache.NewCache(repoInfo, store)
 	if err != nil {
+		returnErr = err
 		return nil, err
 	}
 
@@ -92,10 +125,7 @@ func (pc *ProjectContext) FileExists(path string) bool {
 
 // Close releases resources held by the ProjectContext
 func (pc *ProjectContext) Close() error {
-	if closer, ok := pc.Storage.(interface{ Close() error }); ok {
-		return closer.Close()
-	}
-	return nil
+	return pc.Storage.Close()
 }
 
 // GetFileStatuses returns the status of all tracked files
@@ -137,4 +167,17 @@ func (pc *ProjectContext) GetFileStatuses() ([]domain.FileStatus, error) {
 	}
 
 	return statuses, nil
+}
+
+// extractReposFromObjects extracts unique owner/repo combinations from storage paths
+func extractReposFromObjects(objects []string) map[string]bool {
+	repos := make(map[string]bool)
+	for _, obj := range objects {
+		parts := strings.Split(obj, "/")
+		if len(parts) >= 2 {
+			repo := parts[0] + "/" + parts[1]
+			repos[repo] = true
+		}
+	}
+	return repos
 }

@@ -3,7 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
-	"io"
+	"sort"
 	"strings"
 
 	"github.com/charliek/envsecrets/internal/cache"
@@ -12,15 +12,13 @@ import (
 	"github.com/charliek/envsecrets/internal/crypto"
 	"github.com/charliek/envsecrets/internal/domain"
 	limitedio "github.com/charliek/envsecrets/internal/io"
+	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
 )
 
-// readAllLimited reads data with a size limit
-func readAllLimited(r io.Reader) ([]byte, error) {
-	return limitedio.LimitedReadAll(r, constants.MaxEncryptedFileSize, "encrypted file")
-}
+var rotateDryRun bool
 
 var rotateCmd = &cobra.Command{
 	Use:   "rotate-passphrase",
@@ -38,13 +36,58 @@ passphrase available and choose a strong new passphrase.`,
 	RunE: runRotate,
 }
 
+func init() {
+	rotateCmd.Flags().BoolVar(&rotateDryRun, "dry-run", false, "show what would be rotated without rotating")
+}
+
 func runRotate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	out := GetOutput()
 
-	if !ui.IsInteractive() {
+	if rotateDryRun {
+		out.PrintDryRunHeader()
+	}
+
+	if !rotateDryRun && !ui.CanPrompt() {
 		return fmt.Errorf("rotate-passphrase requires interactive mode")
+	}
+
+	// Create storage client
+	store, err := storage.NewGCSStorage(ctx, cfg.Bucket, cfg.GCSCredentials)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	// List all repos
+	objects, err := store.List(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	// Extract unique repos
+	repos := extractReposFromObjects(objects)
+
+	if len(repos) == 0 {
+		out.Println("No repositories found")
+		return nil
+	}
+
+	// Sort repos for deterministic output
+	repoList := make([]string, 0, len(repos))
+	for repoPath := range repos {
+		repoList = append(repoList, repoPath)
+	}
+	sort.Strings(repoList)
+
+	// In dry-run mode, just show what would be rotated
+	if rotateDryRun {
+		out.Printf("Would rotate %d repositories:\n", len(repos))
+		for _, repoPath := range repoList {
+			out.Printf("  %s\n", repoPath)
+		}
+		return nil
 	}
 
 	// Get current passphrase
@@ -75,32 +118,26 @@ func runRotate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Create storage client
-	store, err := storage.NewGCSStorage(ctx, cfg.Bucket, cfg.GCSCredentials)
-	if err != nil {
-		return err
-	}
-
-	// List all repos
-	objects, err := store.List(ctx, "")
-	if err != nil {
-		return err
-	}
-
 	// Verify current passphrase can decrypt at least one file before proceeding
 	out.Println()
 	out.Printf("Verifying current passphrase...")
 	verified := false
 	for _, obj := range objects {
 		if strings.HasSuffix(obj, ".age") && !strings.HasSuffix(obj, "/HEAD") {
-			// Try to download and decrypt one file
-			r, err := store.Download(ctx, obj)
-			if err != nil {
-				continue
-			}
-			data, err := readAllLimited(r)
-			r.Close()
-			if err != nil {
+			// Try to download and decrypt one file using closure for proper resource cleanup
+			data, ok := func() ([]byte, bool) {
+				r, err := store.Download(ctx, obj)
+				if err != nil {
+					return nil, false
+				}
+				defer r.Close()
+				data, err := limitedio.LimitedReadAll(r, constants.MaxEncryptedFileSize, "encrypted file")
+				if err != nil {
+					return nil, false
+				}
+				return data, true
+			}()
+			if !ok {
 				continue
 			}
 			_, err = currentEnc.Decrypt(data)
@@ -119,21 +156,6 @@ func runRotate(cmd *cobra.Command, args []string) error {
 		out.Println(" OK")
 	}
 
-	// Extract unique repos
-	repos := make(map[string]bool)
-	for _, obj := range objects {
-		parts := strings.Split(obj, "/")
-		if len(parts) >= 2 {
-			repo := parts[0] + "/" + parts[1]
-			repos[repo] = true
-		}
-	}
-
-	if len(repos) == 0 {
-		out.Println("No repositories found")
-		return nil
-	}
-
 	// Confirm
 	prompt := ui.NewPrompt()
 	confirmed, err := prompt.ConfirmDanger(
@@ -147,10 +169,10 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Process each repo
-	for repoPath := range repos {
+	for _, repoPath := range repoList {
 		out.Printf("Processing %s...\n", repoPath)
 
-		repoInfo, err := parseRepoPath(repoPath)
+		repoInfo, err := project.ParseRepoString(repoPath)
 		if err != nil {
 			out.Warn("Skipping invalid repo path: %s", repoPath)
 			continue

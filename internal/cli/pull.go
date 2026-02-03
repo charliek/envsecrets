@@ -1,13 +1,18 @@
 package cli
 
 import (
+	"fmt"
+
 	"github.com/charliek/envsecrets/internal/sync"
+	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 var (
-	pullRef   string
-	pullForce bool
+	pullRef           string
+	pullForce         bool
+	pullDryRun        bool
+	pullSkipConflicts bool
 )
 
 var pullCmd = &cobra.Command{
@@ -23,12 +28,19 @@ to the project directory.`,
 func init() {
 	pullCmd.Flags().StringVar(&pullRef, "ref", "", "pull specific version (commit hash)")
 	pullCmd.Flags().BoolVar(&pullForce, "force", false, "overwrite local files without confirmation")
+	pullCmd.Flags().BoolVar(&pullDryRun, "dry-run", false, "show what would be pulled without pulling")
+	pullCmd.Flags().BoolVar(&pullSkipConflicts, "skip-conflicts", false, "skip conflicting files instead of aborting")
 }
 
 func runPull(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	out := GetOutput()
+
+	// Validate flag combinations
+	if pullForce && pullSkipConflicts {
+		return fmt.Errorf("--force and --skip-conflicts cannot be used together")
+	}
 
 	// Create project context
 	pc, err := NewProjectContext(ctx, cfg)
@@ -41,8 +53,38 @@ func runPull(cmd *cobra.Command, args []string) error {
 	syncer := sync.NewSyncer(pc.Discovery, pc.RepoInfo, pc.Storage, pc.Encrypter, pc.Cache)
 
 	opts := sync.PullOptions{
-		Ref:   pullRef,
-		Force: pullForce,
+		Ref:    pullRef,
+		Force:  pullForce,
+		DryRun: pullDryRun,
+	}
+
+	// Set up conflict resolver
+	if pullSkipConflicts {
+		// Skip all conflicts automatically
+		opts.ConflictResolver = func(f string) (sync.ConflictAction, error) {
+			return sync.ConflictSkip, nil
+		}
+	} else if !pullForce && ui.CanPrompt() {
+		// Interactive conflict resolution
+		prompt := ui.NewPrompt()
+		opts.ConflictResolver = func(f string) (sync.ConflictAction, error) {
+			choice, err := prompt.ConflictChoice(f)
+			if err != nil {
+				return sync.ConflictAbort, err
+			}
+			switch choice {
+			case "o":
+				return sync.ConflictOverwrite, nil
+			case "s":
+				return sync.ConflictSkip, nil
+			default:
+				return sync.ConflictAbort, nil
+			}
+		}
+	}
+
+	if pullDryRun {
+		out.PrintDryRunHeader()
 	}
 
 	result, err := syncer.Pull(ctx, opts)
@@ -55,7 +97,11 @@ func runPull(cmd *cobra.Command, args []string) error {
 		return out.JSON(result)
 	}
 
-	out.Println("Pulled:")
+	if pullDryRun {
+		out.Println("Would pull:")
+	} else {
+		out.Println("Pulled:")
+	}
 	if result.FilesCreated > 0 {
 		out.Printf("  %d file(s) created\n", result.FilesCreated)
 	}
@@ -65,14 +111,13 @@ func runPull(cmd *cobra.Command, args []string) error {
 	if result.FilesSkipped > 0 {
 		out.Printf("  %d file(s) unchanged\n", result.FilesSkipped)
 	}
+	if result.FilesSkippedConflict > 0 {
+		out.Printf("  %d file(s) skipped (conflicts)\n", result.FilesSkippedConflict)
+	}
 
 	if result.Ref != "" {
 		out.Println()
-		refDisplay := result.Ref
-		if len(refDisplay) > 7 {
-			refDisplay = refDisplay[:7]
-		}
-		out.Printf("At ref: %s\n", refDisplay)
+		out.Printf("At ref: %s\n", ui.TruncateHash(result.Ref))
 	}
 
 	return nil

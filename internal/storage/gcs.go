@@ -130,6 +130,29 @@ func (s *GCSStorage) List(ctx context.Context, prefix string) ([]string, error) 
 	return paths, nil
 }
 
+// ListWithMetadata lists objects with extended metadata
+func (s *GCSStorage) ListWithMetadata(ctx context.Context, prefix string) ([]ObjectInfo, error) {
+	var objects []ObjectInfo
+
+	it := s.client.Bucket(s.bucket).Objects(ctx, &storage.Query{Prefix: prefix})
+	for {
+		attrs, err := it.Next()
+		if err == iterator.Done {
+			break
+		}
+		if err != nil {
+			return nil, domain.Errorf(domain.ErrGCSError, "failed to list objects: %v", err)
+		}
+		objects = append(objects, ObjectInfo{
+			Name:    attrs.Name,
+			Size:    attrs.Size,
+			Updated: attrs.Updated,
+		})
+	}
+
+	return objects, nil
+}
+
 // Delete implements Storage.Delete
 func (s *GCSStorage) Delete(ctx context.Context, path string) error {
 	obj := s.client.Bucket(s.bucket).Object(path)

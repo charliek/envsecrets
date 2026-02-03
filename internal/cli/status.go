@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/spf13/cobra"
 )
 
@@ -48,8 +49,8 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 		remoteHead, err := pc.Cache.GetRemoteHead(ctx)
 		if err == nil {
-			if len(remoteHead) > 7 {
-				remoteHead = remoteHead[:7]
+			if len(remoteHead) > constants.ShortHashLength {
+				remoteHead = remoteHead[:constants.ShortHashLength]
 			}
 			out.Println("Remote HEAD:", remoteHead)
 		}
@@ -72,7 +73,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	for _, status := range statuses {
-		out.PrintFileStatus(status)
+		out.PrintFileStatusDetailed(status)
 	}
 
 	// Summary

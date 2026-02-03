@@ -5,6 +5,7 @@ import (
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/domain"
+	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
@@ -12,6 +13,7 @@ import (
 
 var (
 	yesDeletePermanently bool
+	deleteDryRun         bool
 )
 
 var deleteCmd = &cobra.Command{
@@ -31,6 +33,7 @@ In non-interactive mode (scripts, CI/CD), use --yes-delete-permanently to confir
 
 func init() {
 	deleteCmd.Flags().BoolVar(&yesDeletePermanently, "yes-delete-permanently", false, "confirm permanent deletion in non-interactive mode")
+	deleteCmd.Flags().BoolVar(&deleteDryRun, "dry-run", false, "show what would be deleted without deleting")
 }
 
 func runDelete(cmd *cobra.Command, args []string) error {
@@ -39,8 +42,12 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	out := GetOutput()
 	repoPath := args[0]
 
+	if deleteDryRun {
+		out.PrintDryRunHeader()
+	}
+
 	// Parse repo path
-	repoInfo, err := parseRepoPath(repoPath)
+	repoInfo, err := project.ParseRepoString(repoPath)
 	if err != nil {
 		return err
 	}
@@ -50,6 +57,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer store.Close()
 
 	// Check if repo exists
 	prefix := repoInfo.CachePath() + "/"
@@ -62,8 +70,13 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return domain.Errorf(domain.ErrRepoNotFound, "repository not found: %s", repoPath)
 	}
 
+	if deleteDryRun {
+		out.Printf("Would delete %s (%d files)\n", repoPath, len(objects))
+		return nil
+	}
+
 	// Confirm deletion
-	if ui.IsInteractive() {
+	if ui.CanPrompt() {
 		prompt := ui.NewPrompt()
 		confirmed, err := prompt.ConfirmDanger(
 			fmt.Sprintf("This will permanently delete %s and all its history (%d files).",
@@ -78,7 +91,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	} else {
 		// In non-interactive mode, require explicit flag
 		if !yesDeletePermanently {
-			return fmt.Errorf("refusing to delete in non-interactive mode; use --yes-delete-permanently to confirm")
+			return fmt.Errorf("delete requires confirmation; use --yes-delete-permanently in non-interactive mode")
 		}
 	}
 
@@ -95,20 +108,4 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	out.Printf("Deleted %s (%d files)\n", repoPath, len(objects))
 
 	return nil
-}
-
-// parseRepoPath parses an "owner/repo" string into RepoInfo
-func parseRepoPath(path string) (*domain.RepoInfo, error) {
-	for i, c := range path {
-		if c == '/' {
-			if i == 0 || i == len(path)-1 {
-				return nil, fmt.Errorf("invalid repo path: %s", path)
-			}
-			return &domain.RepoInfo{
-				Owner: path[:i],
-				Name:  path[i+1:],
-			}, nil
-		}
-	}
-	return nil, fmt.Errorf("invalid repo path (expected owner/repo): %s", path)
 }

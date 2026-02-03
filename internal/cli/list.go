@@ -2,13 +2,18 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"path"
+	"sort"
 	"strings"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
 )
+
+var listCurrent bool
 
 var listCmd = &cobra.Command{
 	Use:   "list [repo]",
@@ -16,20 +21,37 @@ var listCmd = &cobra.Command{
 	Long: `List repositories or files stored in the bucket.
 
 Without arguments, lists all repositories (owner/repo).
-With a repo argument, lists files in that repository.`,
+With a repo argument, lists files in that repository.
+With --current flag, lists files in the auto-detected current repository.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runList,
 }
 
+func init() {
+	listCmd.Flags().BoolVar(&listCurrent, "current", false, "list files in current repository")
+}
+
 func runList(cmd *cobra.Command, args []string) error {
-	ctx := context.Background()
+	ctx, cancel := signalContext()
+	defer cancel()
 	out := GetOutput()
 
-	// Create storage client
+	// Handle --current flag (uses ProjectContext which creates its own storage)
+	if listCurrent {
+		pc, err := NewProjectContext(ctx, cfg)
+		if err != nil {
+			return err
+		}
+		defer pc.Close()
+		return listRepoFilesWithStorage(ctx, pc.Storage, out, pc.RepoInfo.String())
+	}
+
+	// Create storage client for non-current operations
 	store, err := storage.NewGCSStorage(ctx, cfg.Bucket, cfg.GCSCredentials)
 	if err != nil {
 		return err
 	}
+	defer store.Close()
 
 	if len(args) == 0 {
 		// List all repos
@@ -40,7 +62,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	return listRepoFiles(ctx, store, out, args[0])
 }
 
-func listRepos(ctx context.Context, store *storage.GCSStorage, out *ui.Output) error {
+func listRepos(ctx context.Context, store storage.Storage, out *ui.Output) error {
 	// List all objects in bucket
 	objects, err := store.List(ctx, "")
 	if err != nil {
@@ -48,40 +70,45 @@ func listRepos(ctx context.Context, store *storage.GCSStorage, out *ui.Output) e
 	}
 
 	// Extract unique owner/repo combinations
-	repos := make(map[string]bool)
-	for _, obj := range objects {
-		parts := strings.Split(obj, "/")
-		if len(parts) >= 2 {
-			repo := parts[0] + "/" + parts[1]
-			repos[repo] = true
-		}
-	}
+	repos := extractReposFromObjects(objects)
 
 	if len(repos) == 0 {
 		out.Println("No repositories found")
 		return nil
 	}
 
+	// Sort repos for deterministic output
+	repoList := make([]string, 0, len(repos))
+	for repo := range repos {
+		repoList = append(repoList, repo)
+	}
+	sort.Strings(repoList)
+
 	if out.IsJSON() {
-		var repoList []string
-		for repo := range repos {
-			repoList = append(repoList, repo)
-		}
 		return out.JSON(repoList)
 	}
 
 	out.Println("Repositories:")
-	for repo := range repos {
+	for _, repo := range repoList {
 		out.Printf("  %s\n", repo)
 	}
 
 	return nil
 }
 
+// listRepoFilesWithStorage lists files using the Storage interface
+func listRepoFilesWithStorage(ctx context.Context, store storage.Storage, out *ui.Output, repo string) error {
+	return listRepoFilesImpl(ctx, store, out, repo)
+}
+
 func listRepoFiles(ctx context.Context, store *storage.GCSStorage, out *ui.Output, repo string) error {
+	return listRepoFilesImpl(ctx, store, out, repo)
+}
+
+func listRepoFilesImpl(ctx context.Context, store storage.Storage, out *ui.Output, repo string) error {
 	prefix := repo + "/"
 
-	objects, err := store.List(ctx, prefix)
+	objects, err := store.ListWithMetadata(ctx, prefix)
 	if err != nil {
 		return err
 	}
@@ -92,26 +119,63 @@ func listRepoFiles(ctx context.Context, store *storage.GCSStorage, out *ui.Outpu
 	}
 
 	if out.IsJSON() {
-		var files []string
+		type fileInfo struct {
+			Name    string `json:"name"`
+			Size    int64  `json:"size"`
+			Updated string `json:"updated"`
+		}
+		var files []fileInfo
 		for _, obj := range objects {
 			// Skip HEAD file
-			if strings.HasSuffix(obj, "/HEAD") {
+			if strings.HasSuffix(obj.Name, "/HEAD") {
 				continue
 			}
-			files = append(files, path.Base(obj))
+			files = append(files, fileInfo{
+				Name:    path.Base(obj.Name),
+				Size:    obj.Size,
+				Updated: obj.Updated.Format("2006-01-02 15:04:05"),
+			})
 		}
 		return out.JSON(files)
 	}
 
-	out.Printf("Files in %s:\n", repo)
+	out.Printf("Files in %s:\n\n", repo)
+
+	// Count non-HEAD files
+	fileCount := 0
 	for _, obj := range objects {
-		// Skip HEAD file
-		if strings.HasSuffix(obj, "/HEAD") {
-			continue
+		if !strings.HasSuffix(obj.Name, "/HEAD") {
+			fileCount++
 		}
-		filename := strings.TrimPrefix(obj, prefix)
-		out.Printf("  %s\n", filename)
 	}
 
+	for _, obj := range objects {
+		// Skip HEAD file
+		if strings.HasSuffix(obj.Name, "/HEAD") {
+			continue
+		}
+		filename := strings.TrimPrefix(obj.Name, prefix)
+		out.Printf("  %-25s %10s   %s\n",
+			filename,
+			formatBytes(obj.Size),
+			obj.Updated.Format("2006-01-02 15:04:05"))
+	}
+
+	out.Println()
+	out.Printf("%d file(s)\n", fileCount)
+
 	return nil
+}
+
+// formatBytes formats bytes in human-readable format
+func formatBytes(bytes int64) string {
+	if bytes < constants.BytesPerKB {
+		return fmt.Sprintf("%d B", bytes)
+	}
+	div, exp := int64(constants.BytesPerKB), 0
+	for n := bytes / constants.BytesPerKB; n >= constants.BytesPerKB; n /= constants.BytesPerKB {
+		div *= constants.BytesPerKB
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(bytes)/float64(div), "KMGTPE"[exp])
 }

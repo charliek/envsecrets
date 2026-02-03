@@ -23,13 +23,6 @@ passphrase_env: MY_PASS
 			wantErr: false,
 		},
 		{
-			name: "valid config with command",
-			content: `bucket: test-bucket
-passphrase_command: echo secret
-`,
-			wantErr: false,
-		},
-		{
 			name:        "missing bucket",
 			content:     `passphrase_env: MY_PASS`,
 			wantErr:     true,
@@ -112,8 +105,8 @@ func TestConfig_HasPassphraseConfig(t *testing.T) {
 			want:   true,
 		},
 		{
-			name:   "command set",
-			config: &Config{Bucket: "test", PassphraseCommand: "echo secret"},
+			name:   "command args set",
+			config: &Config{Bucket: "test", PassphraseCommandArgs: []string{"echo", "secret"}},
 			want:   true,
 		},
 	}
@@ -135,54 +128,20 @@ func TestConfigPath(t *testing.T) {
 }
 
 func TestConfig_PassphraseCommandArgs(t *testing.T) {
-	tests := []struct {
-		name        string
-		content     string
-		wantErr     bool
-		errContains string
-	}{
-		{
-			name: "valid passphrase_command_args",
-			content: `bucket: test-bucket
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	content := `bucket: test-bucket
 passphrase_command_args:
   - echo
   - secret
-`,
-			wantErr: false,
-		},
-		{
-			name: "cannot set both passphrase_command and passphrase_command_args",
-			content: `bucket: test-bucket
-passphrase_command: echo legacy
-passphrase_command_args:
-  - echo
-  - new
-`,
-			wantErr:     true,
-			errContains: "cannot set both passphrase_command and passphrase_command_args",
-		},
-	}
+`
+	err := os.WriteFile(path, []byte(content), 0600)
+	require.NoError(t, err)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "config.yaml")
-			err := os.WriteFile(path, []byte(tt.content), 0600)
-			require.NoError(t, err)
-
-			cfg, err := Load(path)
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.errContains != "" {
-					require.Contains(t, err.Error(), tt.errContains)
-				}
-				return
-			}
-
-			require.NoError(t, err)
-			require.NotNil(t, cfg)
-		})
-	}
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	require.Equal(t, []string{"echo", "secret"}, cfg.PassphraseCommandArgs)
 }
 
 func TestConfig_HasPassphraseConfig_WithArgs(t *testing.T) {
