@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charliek/envsecrets/internal/constants"
+	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
@@ -35,14 +36,22 @@ func runList(cmd *cobra.Command, args []string) error {
 	defer cancel()
 	out := GetOutput()
 
-	// Handle --current flag (uses ProjectContext which creates its own storage)
+	// Handle --current flag - only needs discovery + storage, no passphrase required
 	if listCurrent {
-		pc, err := NewProjectContext(ctx, cfg)
+		discovery, err := project.NewDiscovery("")
 		if err != nil {
 			return err
 		}
-		defer pc.Close()
-		return listRepoFilesWithStorage(ctx, pc.Storage, out, pc.RepoInfo.String())
+		repoInfo, err := discovery.RepoInfo()
+		if err != nil {
+			return err
+		}
+		store, err := storage.NewGCSStorage(ctx, cfg.Bucket, cfg.GCSCredentials)
+		if err != nil {
+			return err
+		}
+		defer store.Close()
+		return listRepoFilesWithStorage(ctx, store, out, repoInfo.String())
 	}
 
 	// Create storage client for non-current operations
