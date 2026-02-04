@@ -21,14 +21,19 @@ type MockRepository struct {
 	head        string
 
 	// Error injection
-	InitError     error
-	AddError      error
-	CommitError   error
-	LogError      error
-	CheckoutError error
-	ReadError     error
-	WriteError    error
-	RemoveError   error
+	InitError             error
+	AddError              error
+	CommitError           error
+	LogError              error
+	CheckoutError         error
+	CheckoutBranchError   error
+	GetDefaultBranchError error
+	ReadError             error
+	WriteError            error
+	RemoveError           error
+
+	// Configurable default branch (defaults to "main")
+	DefaultBranch string
 }
 
 // NewMockRepository creates a new mock repository
@@ -127,6 +132,39 @@ func (m *MockRepository) Checkout(ref string) error {
 		}
 	}
 	return domain.Errorf(domain.ErrRefNotFound, "ref not found: %s", ref)
+}
+
+// CheckoutBranch implements Repository.CheckoutBranch
+func (m *MockRepository) CheckoutBranch(branch string) error {
+	if m.CheckoutBranchError != nil {
+		return m.CheckoutBranchError
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.initialized {
+		return domain.ErrNotInitialized
+	}
+
+	// In the mock, we just accept any branch name
+	// Real implementation would validate the branch exists
+	return nil
+}
+
+// GetDefaultBranch implements Repository.GetDefaultBranch
+func (m *MockRepository) GetDefaultBranch() (string, error) {
+	if m.GetDefaultBranchError != nil {
+		return "", m.GetDefaultBranchError
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.initialized {
+		return "", domain.ErrNotInitialized
+	}
+
+	if m.DefaultBranch != "" {
+		return m.DefaultBranch, nil
+	}
+	return "main", nil
 }
 
 // ListFiles implements Repository.ListFiles

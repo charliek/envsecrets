@@ -132,6 +132,16 @@ func (c *Cache) Checkout(ref string) error {
 	return c.repo.Checkout(ref)
 }
 
+// CheckoutBranch checks out a branch by name (attaches HEAD)
+func (c *Cache) CheckoutBranch(branch string) error {
+	return c.repo.CheckoutBranch(branch)
+}
+
+// GetDefaultBranch returns the repository's default branch name
+func (c *Cache) GetDefaultBranch() (string, error) {
+	return c.repo.GetDefaultBranch()
+}
+
 // ListLocalFiles lists all files in the cache (including .age extension)
 func (c *Cache) ListLocalFiles() ([]string, error) {
 	var files []string

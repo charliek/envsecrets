@@ -33,6 +33,12 @@ type Repository interface {
 	// Checkout checks out the given ref
 	Checkout(ref string) error
 
+	// CheckoutBranch checks out a branch by name (attaches HEAD)
+	CheckoutBranch(branch string) error
+
+	// GetDefaultBranch returns the repository's default branch name (main or master)
+	GetDefaultBranch() (string, error)
+
 	// ListFiles returns all files in the repository
 	ListFiles() ([]string, error)
 
@@ -198,6 +204,46 @@ func (r *GoGitRepository) Checkout(ref string) error {
 	}
 
 	return nil
+}
+
+// CheckoutBranch implements Repository.CheckoutBranch
+func (r *GoGitRepository) CheckoutBranch(branch string) error {
+	if r.repo == nil {
+		return domain.ErrNotInitialized
+	}
+
+	wt, err := r.repo.Worktree()
+	if err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to get worktree: %v", err)
+	}
+
+	branchRef := plumbing.NewBranchReferenceName(branch)
+	err = wt.Checkout(&git.CheckoutOptions{
+		Branch: branchRef,
+		Keep:   true, // Keep working tree changes
+	})
+	if err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to checkout branch %s: %v", branch, err)
+	}
+
+	return nil
+}
+
+// GetDefaultBranch implements Repository.GetDefaultBranch
+func (r *GoGitRepository) GetDefaultBranch() (string, error) {
+	if r.repo == nil {
+		return "", domain.ErrNotInitialized
+	}
+
+	// Check for common default branch names
+	for _, branch := range []string{"main", "master"} {
+		ref := plumbing.NewBranchReferenceName(branch)
+		if _, err := r.repo.Reference(ref, true); err == nil {
+			return branch, nil
+		}
+	}
+
+	return "", domain.Errorf(domain.ErrRefNotFound, "no default branch found (checked main, master)")
 }
 
 // ListFiles implements Repository.ListFiles

@@ -33,6 +33,13 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			return nil, err
 		}
 		result.Ref = opts.Ref
+
+		// Return to default branch to avoid detached HEAD state.
+		// The working tree files from the checked-out ref are preserved (Keep: true).
+		// If no default branch is detected (new repo without commits), skip this step.
+		if branch, err := s.cache.GetDefaultBranch(); err == nil {
+			_ = s.cache.CheckoutBranch(branch)
+		}
 	} else {
 		head, err := s.cache.Head()
 		if err != nil {
