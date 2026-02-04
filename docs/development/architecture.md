@@ -50,7 +50,7 @@ type Repository interface {
 
 ## Package Dependencies
 
-```
+```text
 cmd/envsecrets
     └── internal/cli
             ├── internal/config
@@ -89,7 +89,7 @@ cmd/envsecrets
 
 ## Cache Structure
 
-```
+```text
 ~/.envsecrets/
 ├── config.yaml
 └── cache/

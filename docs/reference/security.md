@@ -12,7 +12,7 @@ envsecrets uses [age](https://age-encryption.org/) for encryption, a modern and 
 
 ## Data Flow
 
-```
+```text
 Local Files → Age Encryption → Local Git Cache → GCS
                   ↑
             Passphrase
@@ -36,12 +36,11 @@ The passphrase is the only secret needed to decrypt your files.
 - Use `passphrase_command_args` to retrieve from a secure source (see [Configuration](configuration.md))
 - Never commit the passphrase to git
 
-### Passphrase Recovery
+!!! note "Passphrase Recovery"
+    If you lose the passphrase, the encrypted files cannot be recovered. Keep backups of:
 
-If you lose the passphrase, the encrypted files cannot be recovered. Keep backups of:
-
-- The passphrase itself
-- Unencrypted copies of critical files
+    - The passphrase itself
+    - Unencrypted copies of critical files
 
 ## GCS Security
 
@@ -79,11 +78,10 @@ chmod 600 ~/.envsecrets/config.yaml
 - Network interception (GCS uses TLS)
 - Local cache exposure (cache contains only encrypted files)
 
-### Not Protected Against
-
-- Passphrase compromise
-- Compromise of a machine with decrypted files
-- Malicious team members with passphrase access
+!!! warning "Not Protected Against"
+    - Passphrase compromise
+    - Compromise of a machine with decrypted files
+    - Malicious team members with passphrase access
 
 ## Audit
 

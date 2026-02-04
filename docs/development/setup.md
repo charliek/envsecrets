@@ -62,7 +62,7 @@ Open http://127.0.0.1:7070 to preview.
 
 ## Project Structure
 
-```
+```text
 envsecrets/
 ├── cmd/envsecrets/       # Entry point
 ├── internal/

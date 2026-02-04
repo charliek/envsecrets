@@ -6,7 +6,7 @@ Configure envsecrets for your project.
 
 Create a `.envsecrets` file in your project root listing files to track:
 
-```
+```text
 .env
 .env.local
 config/secrets.yaml
@@ -19,9 +19,16 @@ config/secrets.yaml
 - Empty lines and lines starting with `#` are ignored
 - Glob patterns are not supported
 
+!!! note "Path Validation"
+    Paths are validated before processing:
+
+    - Absolute paths (starting with `/`) are rejected
+    - Path traversal (`..`) is not allowed
+    - Control characters are not permitted
+
 ### Example
 
-```
+```text
 # Environment files
 .env
 .env.local
@@ -35,7 +42,7 @@ config/api-keys.yaml
 
 You can override the auto-detected repository identity by adding a `repo:` directive:
 
-```
+```text
 repo: myorg/custom-name
 
 .env
@@ -106,7 +113,7 @@ config/secrets.yaml
 
 For projects with multiple environments, use separate files:
 
-```
+```text
 .env.development
 .env.staging
 .env.production
@@ -114,7 +121,7 @@ For projects with multiple environments, use separate files:
 
 Or use subdirectories:
 
-```
+```text
 envs/development/.env
 envs/staging/.env
 envs/production/.env

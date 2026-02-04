@@ -94,6 +94,15 @@ The first successful method is used. If all methods fail, the operation fails wi
 | `ENVSECRETS_CONFIG` | Override config file path |
 | `ENVSECRETS_PASSPHRASE` | Default passphrase environment variable |
 
+## File Size Limits
+
+| Type | Limit |
+|------|-------|
+| Plaintext env file | 1 MB |
+| Encrypted file | 2 MB |
+
+Files exceeding these limits will be rejected during push operations.
+
 ## Cache Directory
 
 Encrypted files are cached at `~/.envsecrets/cache/{owner}/{repo}/`.

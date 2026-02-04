@@ -28,7 +28,7 @@ This creates `~/.envsecrets/config.yaml` with your settings.
 
 Create a `.envsecrets` file in your project root listing files to track:
 
-```
+```text
 .env
 .env.local
 config/secrets.yaml
@@ -36,7 +36,7 @@ config/secrets.yaml
 
 Add these files to your `.gitignore`:
 
-```
+```gitignore
 .env
 .env.local
 config/secrets.yaml
