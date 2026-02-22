@@ -41,11 +41,12 @@ func parseShellArgs(s string) ([]string, error) {
 		case r == '\\' && inQuote != '\'':
 			escaped = true
 		case r == '"' || r == '\'':
-			if inQuote == 0 {
+			switch inQuote {
+			case 0:
 				inQuote = r
-			} else if inQuote == r {
+			case r:
 				inQuote = 0
-			} else {
+			default:
 				current.WriteRune(r)
 			}
 		case r == ' ' || r == '\t':

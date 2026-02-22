@@ -4,9 +4,8 @@ Set up your development environment for envsecrets.
 
 ## Prerequisites
 
-- Go 1.24 or later
+- [mise](https://mise.jdx.dev/) — run `mise install` to set up Go 1.24 and golangci-lint v2
 - Docker (for integration tests)
-- golangci-lint
 
 ## Clone and Build
 
