@@ -27,8 +27,9 @@ type Repository interface {
 	// Commit creates a new commit with the given message
 	Commit(message string) (string, error)
 
-	// Log returns the last n commits
-	Log(n int) ([]domain.Commit, error)
+	// Log returns the last n commits. When includeFiles is true, each commit
+	// includes the list of files changed relative to its parent.
+	Log(n int, includeFiles bool) ([]domain.Commit, error)
 
 	// Checkout checks out the given ref
 	Checkout(ref string) error
@@ -143,7 +144,7 @@ func (r *GoGitRepository) Commit(message string) (string, error) {
 }
 
 // Log implements Repository.Log
-func (r *GoGitRepository) Log(n int) ([]domain.Commit, error) {
+func (r *GoGitRepository) Log(n int, includeFiles bool) ([]domain.Commit, error) {
 	if r.repo == nil {
 		return nil, domain.ErrNotInitialized
 	}
@@ -162,13 +163,23 @@ func (r *GoGitRepository) Log(n int) ([]domain.Commit, error) {
 		}
 
 		hash := c.Hash.String()
-		commits = append(commits, domain.Commit{
+		commit := domain.Commit{
 			Hash:      hash,
 			ShortHash: hash[:constants.ShortHashLength],
 			Message:   c.Message,
 			Author:    c.Author.Name,
 			Date:      c.Author.When,
-		})
+		}
+
+		if includeFiles {
+			files, err := commitFiles(c)
+			if err != nil {
+				return err
+			}
+			commit.Files = files
+		}
+
+		commits = append(commits, commit)
 		count++
 		return nil
 	})
@@ -177,6 +188,43 @@ func (r *GoGitRepository) Log(n int) ([]domain.Commit, error) {
 	}
 
 	return commits, nil
+}
+
+// commitFiles returns the list of files changed in a commit by diffing
+// against its parent tree (or an empty tree for root commits).
+func commitFiles(c *object.Commit) ([]string, error) {
+	commitTree, err := c.Tree()
+	if err != nil {
+		return nil, domain.Errorf(domain.ErrGitError, "failed to get commit tree: %v", err)
+	}
+
+	var parentTree *object.Tree
+	if c.NumParents() > 0 {
+		parent, err := c.Parents().Next()
+		if err != nil {
+			return nil, domain.Errorf(domain.ErrGitError, "failed to get parent commit: %v", err)
+		}
+		parentTree, err = parent.Tree()
+		if err != nil {
+			return nil, domain.Errorf(domain.ErrGitError, "failed to get parent tree: %v", err)
+		}
+	}
+
+	changes, err := object.DiffTree(parentTree, commitTree)
+	if err != nil {
+		return nil, domain.Errorf(domain.ErrGitError, "failed to diff trees: %v", err)
+	}
+
+	var files []string
+	for _, change := range changes {
+		name := change.To.Name
+		if name == "" {
+			name = change.From.Name // deleted file
+		}
+		files = append(files, name)
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 // Checkout implements Repository.Checkout

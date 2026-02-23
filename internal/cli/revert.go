@@ -66,7 +66,7 @@ func runRevert(cmd *cobra.Command, args []string) error {
 		}
 
 		// Get recent commits
-		commits, err := pc.Cache.Log(5)
+		commits, err := pc.Cache.Log(5, false)
 		if err != nil {
 			return fmt.Errorf("failed to get history: %w", err)
 		}
