@@ -11,6 +11,7 @@ import (
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"github.com/go-git/go-git/v5/plumbing/storer"
 )
 
 // Compile-time assertion that GoGitRepository implements Repository
@@ -159,7 +160,7 @@ func (r *GoGitRepository) Log(n int, includeFiles bool) ([]domain.Commit, error)
 	count := 0
 	err = iter.ForEach(func(c *object.Commit) error {
 		if count >= n {
-			return nil
+			return storer.ErrStop
 		}
 
 		hash := c.Hash.String()
