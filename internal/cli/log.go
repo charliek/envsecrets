@@ -21,7 +21,7 @@ Displays commits with their hash, message, author, and date.`,
 
 func init() {
 	logCmd.Flags().IntVarP(&logCount, "number", "n", constants.DefaultLogCount, "number of commits to show")
-	logCmd.Flags().BoolVarP(&logVerbose, "verbose", "", false, "show file changes in each commit")
+	logCmd.Flags().BoolVarP(&logVerbose, "verbose", "v", false, "show file changes in each commit")
 }
 
 func runLog(cmd *cobra.Command, args []string) error {
@@ -42,7 +42,7 @@ func runLog(cmd *cobra.Command, args []string) error {
 	}
 
 	// Get log
-	commits, err := pc.Cache.Log(logCount)
+	commits, err := pc.Cache.Log(logCount, logVerbose)
 	if err != nil {
 		return err
 	}

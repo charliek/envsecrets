@@ -97,7 +97,7 @@ func (m *MockRepository) Commit(message string) (string, error) {
 }
 
 // Log implements Repository.Log
-func (m *MockRepository) Log(n int) ([]domain.Commit, error) {
+func (m *MockRepository) Log(n int, includeFiles bool) ([]domain.Commit, error) {
 	if m.LogError != nil {
 		return nil, m.LogError
 	}

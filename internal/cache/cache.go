@@ -122,9 +122,21 @@ func (c *Cache) HasChanges() (bool, error) {
 	return c.repo.HasChanges()
 }
 
-// Log returns the commit history
-func (c *Cache) Log(n int) ([]domain.Commit, error) {
-	return c.repo.Log(n)
+// Log returns the commit history. When includeFiles is true, each commit
+// includes the list of changed files with .age extensions stripped.
+func (c *Cache) Log(n int, includeFiles bool) ([]domain.Commit, error) {
+	commits, err := c.repo.Log(n, includeFiles)
+	if err != nil {
+		return nil, err
+	}
+	if includeFiles {
+		for i := range commits {
+			for j, f := range commits[i].Files {
+				commits[i].Files[j] = strings.TrimSuffix(f, constants.AgeExtension)
+			}
+		}
+	}
+	return commits, nil
 }
 
 // Checkout checks out a specific ref

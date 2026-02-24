@@ -158,6 +158,77 @@ func TestGoGitRepository_Checkout(t *testing.T) {
 	require.ErrorIs(t, err, domain.ErrRefNotFound)
 }
 
+func TestGoGitRepository_Log(t *testing.T) {
+	t.Run("includeFiles true returns changed files", func(t *testing.T) {
+		repo, repoPath := setupTestRepo(t)
+
+		// Commit 1: add file-a.txt
+		require.NoError(t, os.WriteFile(filepath.Join(repoPath, "file-a.txt"), []byte("a"), 0600))
+		require.NoError(t, repo.Add("file-a.txt"))
+		_, err := repo.Commit("add file-a")
+		require.NoError(t, err)
+
+		// Commit 2: add file-b.txt and modify file-a.txt
+		require.NoError(t, os.WriteFile(filepath.Join(repoPath, "file-b.txt"), []byte("b"), 0600))
+		require.NoError(t, os.WriteFile(filepath.Join(repoPath, "file-a.txt"), []byte("a2"), 0600))
+		require.NoError(t, repo.Add("file-a.txt"))
+		require.NoError(t, repo.Add("file-b.txt"))
+		_, err = repo.Commit("add file-b and modify file-a")
+		require.NoError(t, err)
+
+		commits, err := repo.Log(10, true)
+		require.NoError(t, err)
+		require.Len(t, commits, 2)
+
+		// Most recent commit first
+		require.Equal(t, []string{"file-a.txt", "file-b.txt"}, commits[0].Files)
+		require.Equal(t, []string{"file-a.txt"}, commits[1].Files)
+	})
+
+	t.Run("includeFiles false returns empty files", func(t *testing.T) {
+		repo, repoPath := setupTestRepo(t)
+
+		require.NoError(t, os.WriteFile(filepath.Join(repoPath, "file.txt"), []byte("x"), 0600))
+		require.NoError(t, repo.Add("file.txt"))
+		_, err := repo.Commit("add file")
+		require.NoError(t, err)
+
+		commits, err := repo.Log(10, false)
+		require.NoError(t, err)
+		require.Len(t, commits, 1)
+		require.Nil(t, commits[0].Files)
+	})
+
+	t.Run("root commit with includeFiles true", func(t *testing.T) {
+		repo, repoPath := setupTestRepo(t)
+
+		require.NoError(t, os.WriteFile(filepath.Join(repoPath, "root.txt"), []byte("root"), 0600))
+		require.NoError(t, repo.Add("root.txt"))
+		_, err := repo.Commit("root commit")
+		require.NoError(t, err)
+
+		commits, err := repo.Log(1, true)
+		require.NoError(t, err)
+		require.Len(t, commits, 1)
+		require.Equal(t, []string{"root.txt"}, commits[0].Files)
+	})
+
+	t.Run("limits number of commits", func(t *testing.T) {
+		repo, repoPath := setupTestRepo(t)
+
+		for i := 0; i < 5; i++ {
+			require.NoError(t, os.WriteFile(filepath.Join(repoPath, "file.txt"), []byte{byte(i)}, 0600))
+			require.NoError(t, repo.Add("file.txt"))
+			_, err := repo.Commit("commit")
+			require.NoError(t, err)
+		}
+
+		commits, err := repo.Log(3, false)
+		require.NoError(t, err)
+		require.Len(t, commits, 3)
+	})
+}
+
 func TestMockRepository_GetDefaultBranch(t *testing.T) {
 	t.Run("returns main by default", func(t *testing.T) {
 		mock := NewMockRepository()
