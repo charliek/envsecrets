@@ -1,13 +1,17 @@
 package git
 
 import (
+	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
 )
+
+var mockHashCounter atomic.Int64
 
 // Compile-time assertion that MockRepository implements Repository
 var _ Repository = (*MockRepository)(nil)
@@ -362,5 +366,6 @@ func (m *MockRepository) GetFile(path string) ([]byte, bool) {
 }
 
 func generateMockHash() string {
-	return "abcdef1234567890abcdef1234567890abcdef12"[:40-len("mock")] + "mock"
+	n := mockHashCounter.Add(1)
+	return fmt.Sprintf("abcdef1234567890abcdef1234567890%08x", n)
 }

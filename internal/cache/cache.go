@@ -3,6 +3,7 @@ package cache
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -281,7 +282,12 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 
 	// Download and restore packfile
 	packReader, err := c.storage.Download(ctx, prefix+"/objects.pack")
-	if err == nil {
+	if err != nil {
+		// Only ignore "not found" errors (empty repo case)
+		if !errors.Is(err, domain.ErrFileNotFound) {
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to download packfile: %v", err)
+		}
+	} else {
 		packData, readErr := limitedio.LimitedReadAll(packReader, MaxPackfileSize, "packfile")
 		closeErr := packReader.Close()
 		if readErr != nil {
@@ -297,11 +303,15 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 			}
 		}
 	}
-	// If packfile doesn't exist, that's OK (empty repo)
 
 	// Download and restore refs
 	refsReader, err := c.storage.Download(ctx, prefix+"/refs")
-	if err == nil {
+	if err != nil {
+		// Only ignore "not found" errors (empty repo case)
+		if !errors.Is(err, domain.ErrFileNotFound) {
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to download refs: %v", err)
+		}
+	} else {
 		refsData, readErr := limitedio.LimitedReadAll(refsReader, MaxRefsFileSize, "refs file")
 		closeErr := refsReader.Close()
 		if readErr != nil {
@@ -322,12 +332,14 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 				continue
 			}
 			refName, refHash := parts[0], parts[1]
+			if !isValidGitHash(refHash) {
+				continue // Skip malformed refs
+			}
 			if err := c.repo.SetRef(refName, refHash); err != nil {
 				return domain.Errorf(domain.ErrDownloadFailed, "failed to set ref %s: %v", refName, err)
 			}
 		}
 	}
-	// If refs doesn't exist, that's OK (empty repo)
 
 	// Download HEAD and checkout to populate working tree
 	headReader, err := c.storage.Download(ctx, prefix+"/HEAD")
@@ -414,7 +426,7 @@ func (c *Cache) DeleteRemote(ctx context.Context) error {
 	for _, name := range []string{"/objects.pack", "/refs", "/HEAD"} {
 		if err := c.storage.Delete(ctx, prefix+name); err != nil {
 			// Ignore not-found errors for individual files
-			if !strings.Contains(err.Error(), "not found") {
+			if !errors.Is(err, domain.ErrFileNotFound) {
 				return err
 			}
 		}
