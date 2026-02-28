@@ -13,7 +13,7 @@ envsecrets uses [age](https://age-encryption.org/) for encryption, a modern and 
 ## Data Flow
 
 ```text
-Local Files → Age Encryption → Local Git Cache → GCS
+Local Files → Age Encryption → Local Git Cache → Packfile → GCS
                   ↑
             Passphrase
 ```
@@ -21,9 +21,10 @@ Local Files → Age Encryption → Local Git Cache → GCS
 1. Plaintext files exist only in your project directory
 2. Files are encrypted with age before being written to the local cache
 3. The local cache (`~/.envsecrets/cache/`) is a git repository containing only encrypted `.age` files
-4. Encrypted files are synced to GCS (simple file storage, no git repos in GCS)
+4. All git objects are packed into a packfile and synced to GCS along with refs and HEAD
+5. On pull/sync, the packfile is downloaded and unpacked to restore full git history locally
 
-**Note:** Version history is maintained in the local git cache. GCS stores only the encrypted files and a `HEAD` pointer to the latest commit. This simpler architecture has fewer failure modes than storing full git repositories in cloud storage.
+**Note:** GCS stores a packfile (all git objects), a refs file (branch info), and a HEAD file. Git history including commit messages, authors, and dates is synced across machines. All file contents in the packfile are encrypted.
 
 ## Passphrase Security
 

@@ -1,6 +1,7 @@
 package git
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -265,4 +266,175 @@ func TestMockRepository_GetDefaultBranch(t *testing.T) {
 		_, err := mock.GetDefaultBranch()
 		require.ErrorIs(t, err, domain.ErrNotInitialized)
 	})
+}
+
+func TestGoGitRepository_PackAllUnpackAll(t *testing.T) {
+	t.Run("round-trip preserves objects", func(t *testing.T) {
+		// Create source repo with commits
+		srcRepo, srcPath := setupTestRepo(t)
+
+		require.NoError(t, os.WriteFile(filepath.Join(srcPath, "file1.txt"), []byte("hello"), 0600))
+		require.NoError(t, srcRepo.Add("file1.txt"))
+		hash1, err := srcRepo.Commit("first commit")
+		require.NoError(t, err)
+
+		require.NoError(t, os.WriteFile(filepath.Join(srcPath, "file2.txt"), []byte("world"), 0600))
+		require.NoError(t, srcRepo.Add("file2.txt"))
+		_, err = srcRepo.Commit("second commit")
+		require.NoError(t, err)
+
+		// Pack all objects
+		var buf bytes.Buffer
+		err = srcRepo.PackAll(&buf)
+		require.NoError(t, err)
+		require.Greater(t, buf.Len(), 0, "packfile should not be empty")
+
+		// Create destination repo and unpack
+		dstRepo, dstPath := setupTestRepo(t)
+		err = dstRepo.UnpackAll(&buf)
+		require.NoError(t, err)
+
+		// Set refs in destination and checkout
+		srcRefs, err := srcRepo.GetAllRefs()
+		require.NoError(t, err)
+
+		for name, hash := range srcRefs {
+			if name == "HEAD" {
+				continue
+			}
+			require.NoError(t, dstRepo.SetRef(name, hash))
+		}
+
+		// Checkout the first commit to verify objects exist
+		err = dstRepo.Checkout(hash1)
+		require.NoError(t, err)
+
+		// Verify file content
+		content, err := os.ReadFile(filepath.Join(dstPath, "file1.txt"))
+		require.NoError(t, err)
+		require.Equal(t, "hello", string(content))
+	})
+
+	t.Run("empty repo produces no packfile data", func(t *testing.T) {
+		repo, _ := setupTestRepo(t)
+
+		var buf bytes.Buffer
+		err := repo.PackAll(&buf)
+		require.NoError(t, err)
+		require.Equal(t, 0, buf.Len(), "empty repo should produce no packfile data")
+	})
+
+	t.Run("not initialized returns error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		repoPath := filepath.Join(tmpDir, "test-repo")
+		repo, err := NewGoGitRepository(repoPath)
+		require.NoError(t, err)
+
+		var buf bytes.Buffer
+		require.ErrorIs(t, repo.PackAll(&buf), domain.ErrNotInitialized)
+		require.ErrorIs(t, repo.UnpackAll(&buf), domain.ErrNotInitialized)
+	})
+}
+
+func TestGoGitRepository_PackAllUnpackAll_FullRoundTrip(t *testing.T) {
+	// Create repo with multiple commits
+	srcRepo, srcPath := setupTestRepo(t)
+
+	require.NoError(t, os.WriteFile(filepath.Join(srcPath, "a.txt"), []byte("aaa"), 0600))
+	require.NoError(t, srcRepo.Add("a.txt"))
+	_, err := srcRepo.Commit("add a")
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(srcPath, "b.txt"), []byte("bbb"), 0600))
+	require.NoError(t, srcRepo.Add("b.txt"))
+	_, err = srcRepo.Commit("add b")
+	require.NoError(t, err)
+
+	// Get source log
+	srcCommits, err := srcRepo.Log(10, true)
+	require.NoError(t, err)
+
+	// Pack, unpack, verify log matches
+	var buf bytes.Buffer
+	require.NoError(t, srcRepo.PackAll(&buf))
+
+	dstRepo, _ := setupTestRepo(t)
+	require.NoError(t, dstRepo.UnpackAll(&buf))
+
+	// Copy refs
+	srcRefs, err := srcRepo.GetAllRefs()
+	require.NoError(t, err)
+	for name, hash := range srcRefs {
+		if name == "HEAD" {
+			continue
+		}
+		require.NoError(t, dstRepo.SetRef(name, hash))
+	}
+
+	// Checkout HEAD
+	require.NoError(t, dstRepo.Checkout(srcRefs["HEAD"]))
+
+	// Verify log matches
+	dstCommits, err := dstRepo.Log(10, true)
+	require.NoError(t, err)
+	require.Equal(t, len(srcCommits), len(dstCommits))
+
+	for i := range srcCommits {
+		require.Equal(t, srcCommits[i].Hash, dstCommits[i].Hash)
+		require.Equal(t, srcCommits[i].Message, dstCommits[i].Message)
+		require.Equal(t, srcCommits[i].Files, dstCommits[i].Files)
+	}
+}
+
+func TestGoGitRepository_GetAllRefs(t *testing.T) {
+	repo, repoPath := setupTestRepo(t)
+	hash := createInitialCommit(t, repo, repoPath)
+
+	refs, err := repo.GetAllRefs()
+	require.NoError(t, err)
+
+	// Should contain HEAD and the default branch
+	require.Equal(t, hash, refs["HEAD"])
+
+	// Should have at least one branch ref
+	hasBranchRef := false
+	for name := range refs {
+		if name != "HEAD" {
+			hasBranchRef = true
+			break
+		}
+	}
+	require.True(t, hasBranchRef, "should have at least one branch ref")
+}
+
+func TestGoGitRepository_SetRef(t *testing.T) {
+	repo, repoPath := setupTestRepo(t)
+	hash := createInitialCommit(t, repo, repoPath)
+
+	// Set a custom ref
+	err := repo.SetRef("refs/heads/test-branch", hash)
+	require.NoError(t, err)
+
+	// Verify it appears in GetAllRefs
+	refs, err := repo.GetAllRefs()
+	require.NoError(t, err)
+	require.Equal(t, hash, refs["refs/heads/test-branch"])
+}
+
+func TestGoGitRepository_DeleteRef(t *testing.T) {
+	repo, repoPath := setupTestRepo(t)
+	hash := createInitialCommit(t, repo, repoPath)
+
+	// Set and then delete a ref
+	err := repo.SetRef("refs/heads/temp", hash)
+	require.NoError(t, err)
+
+	err = repo.DeleteRef("refs/heads/temp")
+	require.NoError(t, err)
+
+	// Verify it's gone
+	refs, err := repo.GetAllRefs()
+	require.NoError(t, err)
+	_, exists := refs["refs/heads/temp"]
+	require.False(t, exists, "deleted ref should not appear")
 }

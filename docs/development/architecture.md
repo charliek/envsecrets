@@ -38,13 +38,18 @@ type Repository interface {
     Init() error
     Add(paths ...string) error
     Commit(message string) (string, error)
-    Log(n int) ([]Commit, error)
+    Log(n int, includeFiles bool) ([]Commit, error)
     Checkout(ref string) error
     ListFiles() ([]string, error)
     ReadFile(path, ref string) ([]byte, error)
     WriteFile(path string, content []byte) error
     RemoveFile(path string) error
     Head() (string, error)
+    PackAll(w io.Writer) error
+    UnpackAll(r io.Reader) error
+    GetAllRefs() (map[string]string, error)
+    SetRef(name, hash string) error
+    DeleteRef(name string) error
 }
 ```
 
@@ -69,19 +74,22 @@ cmd/envsecrets
 
 1. CLI parses flags and loads config
 2. Project discovery finds repo identity and env files
-3. For each file:
+3. Sync from GCS: download packfile + refs, restore full git history locally
+4. Fast-forward local branch to remote HEAD if behind
+5. For each file:
    - Read plaintext from project directory
    - Encrypt with age
    - Write encrypted file to cache
-4. Commit changes to cache git repo
-5. Sync cache to GCS
+6. Commit changes to cache git repo
+7. Conflict check: verify remote HEAD hasn't changed since step 3
+8. Sync to GCS: create packfile of all objects + refs, upload to GCS
 
 ### Pull
 
 1. CLI parses flags and loads config
 2. Project discovery finds repo identity
-3. Sync cache from GCS
-4. Checkout requested ref (or HEAD)
+3. Sync from GCS: download packfile + refs, restore full git history locally
+4. Checkout requested ref (or HEAD) to populate working tree
 5. For each file in cache:
    - Read encrypted file
    - Decrypt with age
@@ -95,16 +103,25 @@ cmd/envsecrets
 └── cache/
     └── {owner}/
         └── {repo}/
-            ├── .git/
-            ├── .env.age
+            ├── .git/          # Full git history (restored from packfile)
+            ├── .env.age       # Encrypted files (working tree, populated by checkout)
             └── .env.local.age
 ```
 
-The cache is a git repository containing only encrypted files. This provides:
+The cache is a git repository containing only encrypted files. Full git history
+is synced between machines via packfiles stored in GCS.
 
-- Version history
-- Efficient sync (only changed files)
-- Atomic operations
+## GCS Storage Layout
+
+```text
+{owner}/{repo}/objects.pack   # Packfile containing all git objects
+{owner}/{repo}/refs           # Text file: refname SP hash LF
+{owner}/{repo}/HEAD           # Current HEAD commit hash
+```
+
+Every sync downloads the packfile and restores full git history locally. This
+enables `log`, `diff`, and `revert` to work correctly across machines with
+shared commit history.
 
 ## Error Handling
 

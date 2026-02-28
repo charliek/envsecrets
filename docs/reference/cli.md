@@ -82,13 +82,17 @@ envsecrets log [flags]
 
 ### diff
 
-Show changes between versions.
+Show changes between versions using line-by-line comparison.
 
 ```bash
 envsecrets diff [ref1] [ref2]
 ```
 
-If no refs provided, shows diff between local and latest remote.
+- **No args**: Compare local files against latest remote (HEAD)
+- **One ref**: Compare local files against that ref
+- **Two refs**: Compare two refs against each other
+
+Output uses `+`/`-` prefix for added/removed lines, similar to `git diff`.
 
 ### revert
 
