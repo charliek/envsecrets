@@ -344,7 +344,11 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 	// Download HEAD and checkout to populate working tree
 	headReader, err := c.storage.Download(ctx, prefix+"/HEAD")
 	if err != nil {
-		return nil // No HEAD means empty repo
+		// Only ignore "not found" errors (empty repo case)
+		if errors.Is(err, domain.ErrFileNotFound) {
+			return nil // No HEAD means empty repo
+		}
+		return domain.Errorf(domain.ErrDownloadFailed, "failed to download HEAD: %v", err)
 	}
 
 	headData, readErr := limitedio.LimitedReadAll(headReader, 1024, "HEAD file")
