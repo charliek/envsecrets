@@ -1,6 +1,7 @@
 package git
 
 import (
+	"io"
 	"sync"
 	"time"
 
@@ -19,6 +20,8 @@ type MockRepository struct {
 	commits     []domain.Commit
 	staged      map[string]bool
 	head        string
+	refs        map[string]string
+	packData    []byte // stored packfile data for round-trip testing
 
 	// Error injection
 	InitError             error
@@ -31,6 +34,11 @@ type MockRepository struct {
 	ReadError             error
 	WriteError            error
 	RemoveError           error
+	PackAllError          error
+	UnpackAllError        error
+	GetAllRefsError       error
+	SetRefError           error
+	DeleteRefError        error
 
 	// Configurable default branch (defaults to "main")
 	DefaultBranch string
@@ -41,6 +49,7 @@ func NewMockRepository() *MockRepository {
 	return &MockRepository{
 		files:  make(map[string][]byte),
 		staged: make(map[string]bool),
+		refs:   make(map[string]string),
 	}
 }
 
@@ -245,6 +254,96 @@ func (m *MockRepository) HasChanges() (bool, error) {
 		return false, domain.ErrNotInitialized
 	}
 	return len(m.staged) > 0, nil
+}
+
+// PackAll implements Repository.PackAll
+func (m *MockRepository) PackAll(w io.Writer) error {
+	if m.PackAllError != nil {
+		return m.PackAllError
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.initialized {
+		return domain.ErrNotInitialized
+	}
+
+	// Write stored pack data if available, otherwise write nothing
+	if m.packData != nil {
+		_, err := w.Write(m.packData)
+		return err
+	}
+	return nil
+}
+
+// UnpackAll implements Repository.UnpackAll
+func (m *MockRepository) UnpackAll(r io.Reader) error {
+	if m.UnpackAllError != nil {
+		return m.UnpackAllError
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.initialized {
+		return domain.ErrNotInitialized
+	}
+
+	// Store the pack data for round-trip testing
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	m.packData = data
+	return nil
+}
+
+// GetAllRefs implements Repository.GetAllRefs
+func (m *MockRepository) GetAllRefs() (map[string]string, error) {
+	if m.GetAllRefsError != nil {
+		return nil, m.GetAllRefsError
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.initialized {
+		return nil, domain.ErrNotInitialized
+	}
+
+	result := make(map[string]string)
+	for k, v := range m.refs {
+		result[k] = v
+	}
+	if m.head != "" {
+		result["HEAD"] = m.head
+	}
+	return result, nil
+}
+
+// SetRef implements Repository.SetRef
+func (m *MockRepository) SetRef(name, hash string) error {
+	if m.SetRefError != nil {
+		return m.SetRefError
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.initialized {
+		return domain.ErrNotInitialized
+	}
+
+	m.refs[name] = hash
+	return nil
+}
+
+// DeleteRef implements Repository.DeleteRef
+func (m *MockRepository) DeleteRef(name string) error {
+	if m.DeleteRefError != nil {
+		return m.DeleteRefError
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.initialized {
+		return domain.ErrNotInitialized
+	}
+
+	delete(m.refs, name)
+	return nil
 }
 
 // SetFile sets a file in the mock repository (for testing)

@@ -1,6 +1,7 @@
 package git
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"github.com/charliek/envsecrets/internal/domain"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/format/packfile"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
 )
@@ -58,6 +60,21 @@ type Repository interface {
 
 	// HasChanges returns true if there are uncommitted changes
 	HasChanges() (bool, error)
+
+	// PackAll encodes all objects in the repository into a packfile written to w
+	PackAll(w io.Writer) error
+
+	// UnpackAll restores objects from a packfile read from r
+	UnpackAll(r io.Reader) error
+
+	// GetAllRefs returns all references as a map of ref name to commit hash
+	GetAllRefs() (map[string]string, error)
+
+	// SetRef creates or updates a reference to point at the given hash
+	SetRef(name, hash string) error
+
+	// DeleteRef removes a reference
+	DeleteRef(name string) error
 }
 
 // GoGitRepository implements Repository using go-git
@@ -445,6 +462,125 @@ func (r *GoGitRepository) HasChanges() (bool, error) {
 	}
 
 	return !status.IsClean(), nil
+}
+
+// PackAll implements Repository.PackAll
+func (r *GoGitRepository) PackAll(w io.Writer) error {
+	if r.repo == nil {
+		return domain.ErrNotInitialized
+	}
+
+	store := r.repo.Storer
+
+	// Collect all object hashes
+	var hashes []plumbing.Hash
+	iter, err := store.IterEncodedObjects(plumbing.AnyObject)
+	if err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to iterate objects: %v", err)
+	}
+
+	err = iter.ForEach(func(obj plumbing.EncodedObject) error {
+		hashes = append(hashes, obj.Hash())
+		return nil
+	})
+	if err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to collect objects: %v", err)
+	}
+
+	if len(hashes) == 0 {
+		return nil
+	}
+
+	enc := packfile.NewEncoder(w, store, false)
+	if _, err := enc.Encode(hashes, 10); err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to encode packfile: %v", err)
+	}
+
+	return nil
+}
+
+// UnpackAll implements Repository.UnpackAll
+func (r *GoGitRepository) UnpackAll(rd io.Reader) error {
+	if r.repo == nil {
+		return domain.ErrNotInitialized
+	}
+
+	store := r.repo.Storer
+
+	scanner := packfile.NewScanner(rd)
+	parser, err := packfile.NewParserWithStorage(scanner, store)
+	if err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to create packfile parser: %v", err)
+	}
+
+	if _, err := parser.Parse(); err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to parse packfile: %v", err)
+	}
+
+	return nil
+}
+
+// GetAllRefs implements Repository.GetAllRefs
+func (r *GoGitRepository) GetAllRefs() (map[string]string, error) {
+	if r.repo == nil {
+		return nil, domain.ErrNotInitialized
+	}
+
+	refs := make(map[string]string)
+
+	iter, err := r.repo.Storer.IterReferences()
+	if err != nil {
+		return nil, domain.Errorf(domain.ErrGitError, "failed to iterate references: %v", err)
+	}
+
+	err = iter.ForEach(func(ref *plumbing.Reference) error {
+		if ref.Type() == plumbing.HashReference {
+			refs[ref.Name().String()] = ref.Hash().String()
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, domain.Errorf(domain.ErrGitError, "failed to collect references: %v", err)
+	}
+
+	// Include HEAD
+	head, err := r.repo.Head()
+	if err == nil {
+		refs["HEAD"] = head.Hash().String()
+	}
+
+	return refs, nil
+}
+
+// SetRef implements Repository.SetRef
+func (r *GoGitRepository) SetRef(name, hash string) error {
+	if r.repo == nil {
+		return domain.ErrNotInitialized
+	}
+
+	h := plumbing.NewHash(hash)
+	refName := plumbing.ReferenceName(name)
+
+	ref := plumbing.NewHashReference(refName, h)
+	if err := r.repo.Storer.SetReference(ref); err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to set reference %s: %v", name, err)
+	}
+
+	return nil
+}
+
+// DeleteRef implements Repository.DeleteRef
+func (r *GoGitRepository) DeleteRef(name string) error {
+	if r.repo == nil {
+		return domain.ErrNotInitialized
+	}
+
+	refName := plumbing.ReferenceName(name)
+	if err := r.repo.Storer.RemoveReference(refName); err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to delete reference %s: %v", name, err)
+	}
+
+	return nil
 }
 
 // Path returns the repository path

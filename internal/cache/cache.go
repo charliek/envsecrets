@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -207,63 +208,64 @@ func (c *Cache) ListTrackedFiles() ([]string, error) {
 	return files, nil
 }
 
-// SyncToStorage uploads the cache to cloud storage
+// SyncToStorage uploads the cache to cloud storage using packfile format.
+// Uploads objects.pack (all git objects), refs (branch/tag info), and HEAD.
 func (c *Cache) SyncToStorage(ctx context.Context) error {
-	files, err := c.ListLocalFiles()
-	if err != nil {
-		return err
+	prefix := c.repoInfo.CachePath()
+
+	// Create packfile from all git objects
+	var packBuf bytes.Buffer
+	if err := c.repo.PackAll(&packBuf); err != nil {
+		return domain.Errorf(domain.ErrUploadFailed, "failed to create packfile: %v", err)
 	}
 
-	// Upload each file
-	for _, file := range files {
-		if err := c.uploadFile(ctx, file); err != nil {
-			return err
+	// Upload packfile (only if there are objects)
+	if packBuf.Len() > 0 {
+		if err := c.storage.Upload(ctx, prefix+"/objects.pack", &packBuf); err != nil {
+			return domain.Errorf(domain.ErrUploadFailed, "failed to upload packfile: %v", err)
 		}
 	}
 
-	// Upload HEAD ref
+	// Serialize and upload refs
+	allRefs, err := c.repo.GetAllRefs()
+	if err != nil {
+		return domain.Errorf(domain.ErrUploadFailed, "failed to get refs: %v", err)
+	}
+
+	var refsBuf bytes.Buffer
+	for name, hash := range allRefs {
+		if name == "HEAD" {
+			continue // HEAD is stored separately
+		}
+		fmt.Fprintf(&refsBuf, "%s %s\n", name, hash)
+	}
+
+	if err := c.storage.Upload(ctx, prefix+"/refs", &refsBuf); err != nil {
+		return domain.Errorf(domain.ErrUploadFailed, "failed to upload refs: %v", err)
+	}
+
+	// Upload HEAD
 	head, err := c.Head()
 	if err != nil {
 		return err
 	}
 
-	headPath := c.repoInfo.CachePath() + "/HEAD"
-	err = c.storage.Upload(ctx, headPath, strings.NewReader(head))
-	if err != nil {
-		return err
+	if err := c.storage.Upload(ctx, prefix+"/HEAD", strings.NewReader(head)); err != nil {
+		return domain.Errorf(domain.ErrUploadFailed, "failed to upload HEAD: %v", err)
 	}
 
 	return nil
 }
 
-// uploadFile uploads a single file to storage with proper resource cleanup
-func (c *Cache) uploadFile(ctx context.Context, file string) (err error) {
-	// Validate path to prevent traversal attacks from corrupted git index
-	localPath, err := c.secureJoinPath(file)
-	if err != nil {
-		return domain.Errorf(domain.ErrUploadFailed, "invalid path: %v", err)
-	}
-	remotePath := c.repoInfo.CachePath() + "/" + file
+// MaxPackfileSize is the maximum size of a packfile download (50 MB)
+const MaxPackfileSize = 50 * 1024 * 1024
 
-	f, err := os.Open(localPath)
-	if err != nil {
-		return domain.Errorf(domain.ErrUploadFailed, "failed to open %s: %v", file, err)
-	}
-	defer func() {
-		closeErr := f.Close()
-		if err == nil && closeErr != nil {
-			err = domain.Errorf(domain.ErrUploadFailed, "failed to close %s: %v", file, closeErr)
-		}
-	}()
+// MaxRefsFileSize is the maximum size of a refs file (1 MB)
+const MaxRefsFileSize = 1 * 1024 * 1024
 
-	if err := c.storage.Upload(ctx, remotePath, f); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// SyncFromStorage downloads the cache from cloud storage
+// SyncFromStorage downloads the cache from cloud storage using packfile format.
+// Downloads objects.pack and refs, restores git objects and references, then
+// checks out HEAD to populate the working tree.
 func (c *Cache) SyncFromStorage(ctx context.Context) error {
 	// Ensure cache directory exists with restrictive permissions
 	if err := os.MkdirAll(c.baseDir, 0700); err != nil {
@@ -275,50 +277,78 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 		return err
 	}
 
-	// List remote files
-	prefix := c.repoInfo.CachePath() + "/"
-	remoteFiles, err := c.storage.List(ctx, prefix)
-	if err != nil {
-		return err
-	}
+	prefix := c.repoInfo.CachePath()
 
-	// Download each .age file
-	for _, remotePath := range remoteFiles {
-		// Skip HEAD file
-		if strings.HasSuffix(remotePath, "/HEAD") {
-			continue
-		}
-
-		localFile := strings.TrimPrefix(remotePath, prefix)
-
-		// Validate path to prevent traversal attacks from malicious GCS paths
-		localPath, err := c.secureJoinPath(localFile)
-		if err != nil {
-			return domain.Errorf(domain.ErrDownloadFailed, "path traversal attempt detected: %v", err)
-		}
-
-		// Ensure directory exists with restrictive permissions
-		if err := os.MkdirAll(filepath.Dir(localPath), 0700); err != nil {
-			return domain.Errorf(domain.ErrDownloadFailed, "failed to create directory: %v", err)
-		}
-
-		r, err := c.storage.Download(ctx, remotePath)
-		if err != nil {
-			return err
-		}
-
-		// Use size-limited read to prevent memory exhaustion from malicious content
-		data, err := limitedio.LimitedReadAll(r, constants.MaxEncryptedFileSize, fmt.Sprintf("file %s", remotePath))
-		closeErr := r.Close()
-		if err != nil {
-			return domain.Errorf(domain.ErrDownloadFailed, "failed to read %s: %v", remotePath, err)
+	// Download and restore packfile
+	packReader, err := c.storage.Download(ctx, prefix+"/objects.pack")
+	if err == nil {
+		packData, readErr := limitedio.LimitedReadAll(packReader, MaxPackfileSize, "packfile")
+		closeErr := packReader.Close()
+		if readErr != nil {
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to read packfile: %v", readErr)
 		}
 		if closeErr != nil {
-			return domain.Errorf(domain.ErrDownloadFailed, "failed to close reader for %s: %v", remotePath, closeErr)
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to close packfile reader: %v", closeErr)
 		}
 
-		if err := os.WriteFile(localPath, data, 0600); err != nil {
-			return domain.Errorf(domain.ErrDownloadFailed, "failed to write %s: %v", localPath, err)
+		if len(packData) > 0 {
+			if err := c.repo.UnpackAll(bytes.NewReader(packData)); err != nil {
+				return domain.Errorf(domain.ErrDownloadFailed, "failed to unpack objects: %v", err)
+			}
+		}
+	}
+	// If packfile doesn't exist, that's OK (empty repo)
+
+	// Download and restore refs
+	refsReader, err := c.storage.Download(ctx, prefix+"/refs")
+	if err == nil {
+		refsData, readErr := limitedio.LimitedReadAll(refsReader, MaxRefsFileSize, "refs file")
+		closeErr := refsReader.Close()
+		if readErr != nil {
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to read refs: %v", readErr)
+		}
+		if closeErr != nil {
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to close refs reader: %v", closeErr)
+		}
+
+		// Parse and set each ref
+		for _, line := range strings.Split(string(refsData), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			parts := strings.SplitN(line, " ", 2)
+			if len(parts) != 2 {
+				continue
+			}
+			refName, refHash := parts[0], parts[1]
+			if err := c.repo.SetRef(refName, refHash); err != nil {
+				return domain.Errorf(domain.ErrDownloadFailed, "failed to set ref %s: %v", refName, err)
+			}
+		}
+	}
+	// If refs doesn't exist, that's OK (empty repo)
+
+	// Download HEAD and checkout to populate working tree
+	headReader, err := c.storage.Download(ctx, prefix+"/HEAD")
+	if err != nil {
+		return nil // No HEAD means empty repo
+	}
+
+	headData, readErr := limitedio.LimitedReadAll(headReader, 1024, "HEAD file")
+	closeErr := headReader.Close()
+	if readErr != nil {
+		return domain.Errorf(domain.ErrDownloadFailed, "failed to read HEAD: %v", readErr)
+	}
+	if closeErr != nil {
+		return domain.Errorf(domain.ErrDownloadFailed, "failed to close HEAD reader: %v", closeErr)
+	}
+
+	head := strings.TrimSpace(string(headData))
+	if head != "" && isValidGitHash(head) {
+		// Checkout HEAD to update working tree
+		if err := c.repo.Checkout(head); err != nil {
+			return domain.Errorf(domain.ErrDownloadFailed, "failed to checkout HEAD: %v", err)
 		}
 	}
 
@@ -378,12 +408,23 @@ func (c *Cache) ExistsRemote(ctx context.Context) (bool, error) {
 
 // DeleteRemote deletes all files for this repo from cloud storage
 func (c *Cache) DeleteRemote(ctx context.Context) error {
-	prefix := c.repoInfo.CachePath() + "/"
-	files, err := c.storage.List(ctx, prefix)
+	prefix := c.repoInfo.CachePath()
+
+	// Delete known packfile-format files
+	for _, name := range []string{"/objects.pack", "/refs", "/HEAD"} {
+		if err := c.storage.Delete(ctx, prefix+name); err != nil {
+			// Ignore not-found errors for individual files
+			if !strings.Contains(err.Error(), "not found") {
+				return err
+			}
+		}
+	}
+
+	// Also clean up any legacy flat files that might remain
+	files, err := c.storage.List(ctx, prefix+"/")
 	if err != nil {
 		return err
 	}
-
 	for _, file := range files {
 		if err := c.storage.Delete(ctx, file); err != nil {
 			return err

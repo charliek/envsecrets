@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/charliek/envsecrets/internal/domain"
@@ -48,31 +49,104 @@ func TestCache_Commit(t *testing.T) {
 	require.NotEmpty(t, hash)
 }
 
-func TestCache_SyncToStorage(t *testing.T) {
+func TestCache_SyncToStoragePackfile(t *testing.T) {
 	mockRepo := git.NewMockRepository()
 	mockRepo.Init()
 	mockStorage := storage.NewMockStorage()
 
 	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
-	cache := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
 
 	// Write and commit a file
-	err := cache.WriteEncrypted(".env", []byte("encrypted"))
+	err := c.WriteEncrypted(".env", []byte("encrypted"))
 	require.NoError(t, err)
 
 	mockRepo.Add(".env.age")
-	_, err = cache.Commit("initial")
+	_, err = c.Commit("initial")
 	require.NoError(t, err)
 
-	// Sync to storage
 	ctx := context.Background()
-	err = cache.SyncToStorage(ctx)
+	err = c.SyncToStorage(ctx)
 	require.NoError(t, err)
 
 	// Verify HEAD was uploaded
 	exists, err := mockStorage.Exists(ctx, "owner/repo/HEAD")
 	require.NoError(t, err)
 	require.True(t, exists)
+
+	// Verify refs was uploaded
+	exists, err = mockStorage.Exists(ctx, "owner/repo/refs")
+	require.NoError(t, err)
+	require.True(t, exists)
+
+	// HEAD should contain a valid hash
+	headData, ok := mockStorage.GetData("owner/repo/HEAD")
+	require.True(t, ok)
+	require.Len(t, strings.TrimSpace(string(headData)), 40)
+}
+
+func TestCache_SyncFromStoragePackfile(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// Create a commit so there's a valid hash to checkout
+	mockRepo.SetFile(".env.age", []byte("encrypted"))
+	mockRepo.Add(".env.age")
+	hash, err := mockRepo.Commit("initial")
+	require.NoError(t, err)
+
+	// Seed mock storage with pack data, refs, and HEAD using the real hash
+	mockStorage.SetData("owner/repo/objects.pack", []byte("mock-pack-data"))
+	mockStorage.SetData("owner/repo/refs", []byte("refs/heads/master "+hash+"\n"))
+	mockStorage.SetData("owner/repo/HEAD", []byte(hash))
+
+	ctx := context.Background()
+	err = c.SyncFromStorage(ctx)
+	require.NoError(t, err)
+
+	// Verify SetRef was called for the branch ref
+	refs, err := mockRepo.GetAllRefs()
+	require.NoError(t, err)
+	require.Equal(t, hash, refs["refs/heads/master"])
+}
+
+func TestCache_SyncFromStorage_EmptyRepo(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// No data in storage - should succeed (empty repo)
+	ctx := context.Background()
+	err := c.SyncFromStorage(ctx)
+	require.NoError(t, err)
+}
+
+func TestCache_DeleteRemote(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// Set up packfile-format files
+	ctx := context.Background()
+	mockStorage.SetData("owner/repo/objects.pack", []byte("pack"))
+	mockStorage.SetData("owner/repo/refs", []byte("refs"))
+	mockStorage.SetData("owner/repo/HEAD", []byte("head"))
+
+	err := c.DeleteRemote(ctx)
+	require.NoError(t, err)
+
+	// All files should be deleted
+	require.Equal(t, 0, mockStorage.Count())
 }
 
 func TestCache_RepoInfoPath(t *testing.T) {

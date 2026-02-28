@@ -11,8 +11,8 @@ import (
 
 // Push encrypts and uploads environment files
 func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult, error) {
-	// Ensure cache is initialized
-	if err := s.EnsureCacheInitialized(ctx); err != nil {
+	// Sync from storage first to get full history and latest state
+	if err := s.syncBeforePush(ctx); err != nil {
 		return nil, err
 	}
 
@@ -134,6 +134,52 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 	}
 
 	return result, nil
+}
+
+// syncBeforePush syncs from storage to get the latest history, then fast-forwards
+// the local branch if needed so new commits build on top of remote HEAD.
+func (s *Syncer) syncBeforePush(ctx context.Context) error {
+	// Check if remote exists
+	exists, err := s.cache.ExistsRemote(ctx)
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		// Sync from remote to get full history
+		if err := s.cache.SyncFromStorage(ctx); err != nil {
+			return fmt.Errorf("failed to sync from storage: %w", err)
+		}
+
+		// Align local to remote HEAD so new commits build on top of
+		// the latest shared history. The local cache has no independent
+		// commits — it is only written to by this tool after syncing —
+		// so resetting to remote HEAD is always safe here.
+		remoteHead, err := s.cache.GetRemoteHead(ctx)
+		if err == nil && remoteHead != "" {
+			localHead, headErr := s.cache.Head()
+			if headErr != nil {
+				return fmt.Errorf("failed to read local HEAD: %w", headErr)
+			}
+			if localHead != remoteHead {
+				if err := s.cache.Checkout(remoteHead); err != nil {
+					return fmt.Errorf("failed to checkout remote HEAD: %w", err)
+				}
+				// Re-attach to default branch (detached HEAD is acceptable
+				// if branch doesn't exist yet, so we ignore that error)
+				if branch, branchErr := s.cache.GetDefaultBranch(); branchErr == nil {
+					_ = s.cache.CheckoutBranch(branch)
+				}
+			}
+		}
+	} else {
+		// No remote - just ensure cache is initialized
+		if err := s.EnsureCacheInitialized(ctx); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func generateCommitMessage(result *domain.PushResult) string {

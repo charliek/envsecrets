@@ -7,6 +7,7 @@ import (
 	"github.com/charliek/envsecrets/internal/domain"
 	"github.com/charliek/envsecrets/internal/sync"
 	"github.com/charliek/envsecrets/internal/ui"
+	"github.com/sergi/go-diff/diffmatchpatch"
 	"github.com/spf13/cobra"
 )
 
@@ -51,7 +52,7 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	var ref1, ref2 string
 	switch len(args) {
 	case 0:
-		// Compare local to HEAD
+		// Compare local to HEAD (remote)
 		ref2 = "HEAD"
 	case 1:
 		// Compare local to specified ref
@@ -103,16 +104,27 @@ func runDiff(cmd *cobra.Command, args []string) error {
 
 		hasChanges = true
 
-		// Print diff header
-		out.Println("---", file)
-		if ref1 == "" {
-			out.Println("+++ (local)")
-		} else {
-			out.Printf("+++ %s (%s)\n", file, ref1)
+		// Print diff header based on argument count
+		switch len(args) {
+		case 0:
+			out.Printf("--- %s (remote)\n", file)
+			out.Printf("+++ %s (local)\n", file)
+		case 1:
+			out.Printf("--- %s (%s)\n", file, ref2)
+			out.Printf("+++ %s (local)\n", file)
+		case 2:
+			out.Printf("--- %s (%s)\n", file, ref1)
+			out.Printf("+++ %s (%s)\n", file, ref2)
 		}
 
-		// Simple line-by-line diff
-		printSimpleDiff(out, string(content2), string(content1))
+		// Proper line-by-line diff
+		if len(args) == 2 {
+			// Two refs: show changes from ref1 to ref2
+			printLineDiff(out, string(content1), string(content2))
+		} else {
+			// 0 or 1 ref: show changes from remote/ref to local
+			printLineDiff(out, string(content2), string(content1))
+		}
 		out.Println()
 	}
 
@@ -123,32 +135,36 @@ func runDiff(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func printSimpleDiff(out *ui.Output, old, new string) {
-	oldLines := strings.Split(old, "\n")
-	newLines := strings.Split(new, "\n")
+func printLineDiff(out *ui.Output, old, new string) {
+	dmp := diffmatchpatch.New()
 
-	// Very simple diff - just show added/removed lines
-	oldSet := make(map[string]bool)
-	for _, line := range oldLines {
-		oldSet[line] = true
-	}
+	// Use line-level diffing for readable output
+	chars1, chars2, lines := dmp.DiffLinesToChars(old, new)
+	diffs := dmp.DiffMain(chars1, chars2, false)
+	diffs = dmp.DiffCharsToLines(diffs, lines)
+	diffs = dmp.DiffCleanupSemantic(diffs)
 
-	newSet := make(map[string]bool)
-	for _, line := range newLines {
-		newSet[line] = true
-	}
-
-	// Show removed lines
-	for _, line := range oldLines {
-		if !newSet[line] && line != "" {
-			out.Printf("- %s\n", line)
+	for _, d := range diffs {
+		text := d.Text
+		switch d.Type {
+		case diffmatchpatch.DiffDelete:
+			for _, line := range splitDiffLines(text) {
+				out.Printf("- %s\n", line)
+			}
+		case diffmatchpatch.DiffInsert:
+			for _, line := range splitDiffLines(text) {
+				out.Printf("+ %s\n", line)
+			}
 		}
 	}
+}
 
-	// Show added lines
-	for _, line := range newLines {
-		if !oldSet[line] && line != "" {
-			out.Printf("+ %s\n", line)
-		}
+// splitDiffLines splits text into lines for diff output, removing trailing
+// empty line that results from a trailing newline.
+func splitDiffLines(text string) []string {
+	lines := strings.Split(text, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
 	}
+	return lines
 }
