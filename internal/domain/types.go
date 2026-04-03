@@ -89,6 +89,14 @@ type PullResult struct {
 	FilesWithConflicts []string `json:"files_with_conflicts,omitempty"`
 }
 
+// StorageFormatInfo describes the storage format version found in a remote repo
+type StorageFormatInfo struct {
+	// Version is the format version number (0 means no FORMAT file found)
+	Version int `json:"version"`
+	// Detected is true if the version was read from a FORMAT file
+	Detected bool `json:"detected"`
+}
+
 // EnvSecretsConfig holds parsed .envsecrets file contents
 type EnvSecretsConfig struct {
 	// RepoOverride from "repo: owner/name" directive

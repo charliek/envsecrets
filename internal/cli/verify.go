@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/charliek/envsecrets/internal/cache"
@@ -93,7 +94,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 			out.Printf("FAIL  %s\n", repo)
 			out.Printf("      %s\n", result.Error)
 		} else {
-			out.Printf("OK    %s (%d files)\n", repo, result.FilesVerified)
+			out.Printf("OK    %s (v%d, %d files)\n", repo, result.FormatVersion, result.FilesVerified)
 		}
 	}
 
@@ -108,6 +109,7 @@ func runVerify(cmd *cobra.Command, args []string) error {
 }
 
 type verifyResult struct {
+	FormatVersion int    `json:"format_version,omitempty"`
 	FilesVerified int    `json:"files_verified,omitempty"`
 	Error         string `json:"error,omitempty"`
 }
@@ -119,29 +121,52 @@ func verifyRepo(ctx context.Context, store storage.Storage, repoInfo *domain.Rep
 		return verifyResult{Error: err.Error()}
 	}
 
+	// Detect format version
+	formatInfo, err := cacheRepo.DetectRemoteVersion(ctx)
+	if err != nil {
+		return verifyResult{Error: fmt.Sprintf("format detection failed: %v", err)}
+	}
+
+	result := verifyResult{FormatVersion: formatInfo.Version}
+
+	// Check version compatibility — report as verification failure, not crash
+	if err := cache.CheckVersionCompatibility(formatInfo); err != nil {
+		if errors.Is(err, domain.ErrVersionUnknown) {
+			result.Error = "no FORMAT marker — storage format unknown"
+		} else {
+			result.Error = fmt.Sprintf("incompatible format: %v", err)
+		}
+		return result
+	}
+
 	// Sync from storage
 	if err := cacheRepo.SyncFromStorage(ctx); err != nil {
-		return verifyResult{Error: fmt.Sprintf("sync failed: %v", err)}
+		result.Error = fmt.Sprintf("sync failed: %v", err)
+		return result
 	}
 
 	// Get all encrypted files
 	files, err := cacheRepo.ListTrackedFiles()
 	if err != nil {
-		return verifyResult{Error: fmt.Sprintf("list failed: %v", err)}
+		result.Error = fmt.Sprintf("list failed: %v", err)
+		return result
 	}
 
 	// Verify each file
 	for _, file := range files {
 		encrypted, err := cacheRepo.ReadEncrypted(file)
 		if err != nil {
-			return verifyResult{Error: fmt.Sprintf("read %s failed: %v", file, err)}
+			result.Error = fmt.Sprintf("read %s failed: %v", file, err)
+			return result
 		}
 
 		_, err = enc.Decrypt(encrypted)
 		if err != nil {
-			return verifyResult{Error: fmt.Sprintf("decrypt %s failed: %v", file, err)}
+			result.Error = fmt.Sprintf("decrypt %s failed: %v", file, err)
+			return result
 		}
 	}
 
-	return verifyResult{FilesVerified: len(files)}
+	result.FilesVerified = len(files)
+	return result
 }

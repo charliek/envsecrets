@@ -32,6 +32,8 @@ var (
 	ErrNotInitialized   = errors.New("cache not initialized")
 	ErrRemoteChanged    = errors.New("remote has changed since last sync")
 	ErrFileSizeTooLarge = errors.New("file size exceeds limit")
+	ErrVersionTooNew    = errors.New("storage format version not supported")
+	ErrVersionUnknown   = errors.New("storage format not recognized")
 )
 
 // ExitCodeError wraps an error with an exit code
@@ -100,6 +102,8 @@ func errorToExitCode(err error) int {
 		return constants.ExitFileNotFound
 	case errors.Is(err, ErrPermissionDenied):
 		return constants.ExitPermissionDenied
+	case errors.Is(err, ErrVersionTooNew), errors.Is(err, ErrVersionUnknown):
+		return constants.ExitVersionIncompatible
 	default:
 		return constants.ExitUnknownError
 	}

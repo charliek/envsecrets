@@ -134,8 +134,7 @@ func listRepoFilesImpl(ctx context.Context, store storage.Storage, out *ui.Outpu
 		}
 		var files []fileInfo
 		for _, obj := range objects {
-			// Skip HEAD file
-			if strings.HasSuffix(obj.Name, "/HEAD") {
+			if isInternalStorageFile(obj.Name) {
 				continue
 			}
 			files = append(files, fileInfo{
@@ -149,17 +148,16 @@ func listRepoFilesImpl(ctx context.Context, store storage.Storage, out *ui.Outpu
 
 	out.Printf("Files in %s:\n\n", repo)
 
-	// Count non-HEAD files
+	// Count user files (exclude internal storage files)
 	fileCount := 0
 	for _, obj := range objects {
-		if !strings.HasSuffix(obj.Name, "/HEAD") {
+		if !isInternalStorageFile(obj.Name) {
 			fileCount++
 		}
 	}
 
 	for _, obj := range objects {
-		// Skip HEAD file
-		if strings.HasSuffix(obj.Name, "/HEAD") {
+		if isInternalStorageFile(obj.Name) {
 			continue
 		}
 		filename := strings.TrimPrefix(obj.Name, prefix)
@@ -173,6 +171,16 @@ func listRepoFilesImpl(ctx context.Context, store storage.Storage, out *ui.Outpu
 	out.Printf("%d file(s)\n", fileCount)
 
 	return nil
+}
+
+// isInternalStorageFile returns true if the object path is an internal
+// storage file (FORMAT, HEAD, objects.pack, refs) that should be hidden
+// from user-facing list output.
+func isInternalStorageFile(name string) bool {
+	return strings.HasSuffix(name, "/HEAD") ||
+		strings.HasSuffix(name, "/FORMAT") ||
+		strings.HasSuffix(name, "/objects.pack") ||
+		strings.HasSuffix(name, "/refs")
 }
 
 // formatBytes formats bytes in human-readable format

@@ -2,9 +2,11 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
 	"github.com/charliek/envsecrets/internal/git"
 	"github.com/charliek/envsecrets/internal/storage"
@@ -99,9 +101,10 @@ func TestCache_SyncFromStoragePackfile(t *testing.T) {
 	hash, err := mockRepo.Commit("initial")
 	require.NoError(t, err)
 
-	// Seed mock storage with pack data, refs, and HEAD using the real hash
+	// Seed mock storage with pack data, refs, FORMAT, and HEAD using the real hash
 	mockStorage.SetData("owner/repo/objects.pack", []byte("mock-pack-data"))
 	mockStorage.SetData("owner/repo/refs", []byte("refs/heads/master "+hash+"\n"))
+	mockStorage.SetData("owner/repo/FORMAT", []byte("1"))
 	mockStorage.SetData("owner/repo/HEAD", []byte(hash))
 
 	ctx := context.Background()
@@ -244,4 +247,271 @@ func TestCache_Validate_CorruptedNoGit(t *testing.T) {
 	require.False(t, health.GitValid, "git should not be valid")
 	require.NotNil(t, health.Error, "should have error for missing .git")
 	require.Contains(t, health.Error.Error(), ".git directory")
+}
+
+func TestDetectRemoteVersion_ValidFormat(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte("1"))
+
+	ctx := context.Background()
+	info, err := c.DetectRemoteVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, info.Version)
+	require.True(t, info.Detected)
+}
+
+func TestDetectRemoteVersion_NoFormatFile(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	ctx := context.Background()
+	info, err := c.DetectRemoteVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 0, info.Version)
+	require.False(t, info.Detected)
+}
+
+func TestDetectRemoteVersion_WhitespaceFormat(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte("1\n"))
+
+	ctx := context.Background()
+	info, err := c.DetectRemoteVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, info.Version)
+	require.True(t, info.Detected)
+}
+
+func TestDetectRemoteVersion_EmptyFormat(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte(""))
+
+	ctx := context.Background()
+	_, err := c.DetectRemoteVersion(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "empty")
+}
+
+func TestDetectRemoteVersion_NonNumericFormat(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte("abc"))
+
+	ctx := context.Background()
+	_, err := c.DetectRemoteVersion(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "non-numeric")
+}
+
+func TestDetectRemoteVersion_NegativeVersion(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte("-1"))
+
+	ctx := context.Background()
+	_, err := c.DetectRemoteVersion(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid version")
+}
+
+func TestDetectRemoteVersion_ZeroVersion(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte("0"))
+
+	ctx := context.Background()
+	_, err := c.DetectRemoteVersion(ctx)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid version")
+}
+
+func TestDetectRemoteVersion_FutureVersion(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	mockStorage.SetData("owner/repo/FORMAT", []byte("99"))
+
+	ctx := context.Background()
+	info, err := c.DetectRemoteVersion(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 99, info.Version)
+	require.True(t, info.Detected)
+}
+
+func TestCheckVersionCompatibility_NoFormat(t *testing.T) {
+	info := &domain.StorageFormatInfo{Version: 0, Detected: false}
+	err := CheckVersionCompatibility(info)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, domain.ErrVersionUnknown))
+	require.Contains(t, err.Error(), "envsecrets delete")
+}
+
+func TestCheckVersionCompatibility_Current(t *testing.T) {
+	info := &domain.StorageFormatInfo{Version: constants.CurrentFormatVersion, Detected: true}
+	err := CheckVersionCompatibility(info)
+	require.NoError(t, err)
+}
+
+func TestCheckVersionCompatibility_TooNew(t *testing.T) {
+	info := &domain.StorageFormatInfo{Version: 99, Detected: true}
+	err := CheckVersionCompatibility(info)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, domain.ErrVersionTooNew))
+	require.Contains(t, err.Error(), "upgrade envsecrets")
+}
+
+func TestWriteFormatMarker(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	ctx := context.Background()
+	err := c.WriteFormatMarker(ctx, 1)
+	require.NoError(t, err)
+
+	data, ok := mockStorage.GetData("owner/repo/FORMAT")
+	require.True(t, ok)
+	require.Equal(t, "1", string(data))
+}
+
+func TestSyncToStorage_WritesFormatBeforeHead(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	err := c.WriteEncrypted(".env", []byte("encrypted"))
+	require.NoError(t, err)
+
+	mockRepo.Add(".env.age")
+	_, err = c.Commit("initial")
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	err = c.SyncToStorage(ctx)
+	require.NoError(t, err)
+
+	// Verify FORMAT was uploaded
+	exists, err := mockStorage.Exists(ctx, "owner/repo/FORMAT")
+	require.NoError(t, err)
+	require.True(t, exists)
+
+	data, ok := mockStorage.GetData("owner/repo/FORMAT")
+	require.True(t, ok)
+	require.Equal(t, "1", string(data))
+
+	// Verify FORMAT was uploaded before HEAD
+	formatIdx := -1
+	headIdx := -1
+	for i, path := range mockStorage.UploadOrder {
+		if path == "owner/repo/FORMAT" {
+			formatIdx = i
+		}
+		if path == "owner/repo/HEAD" {
+			headIdx = i
+		}
+	}
+	require.NotEqual(t, -1, formatIdx, "FORMAT should be uploaded")
+	require.NotEqual(t, -1, headIdx, "HEAD should be uploaded")
+	require.Less(t, formatIdx, headIdx, "FORMAT must be uploaded before HEAD")
+}
+
+func TestDeleteRemote_IncludesFormat(t *testing.T) {
+	mockStorage := storage.NewMockStorage()
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	ctx := context.Background()
+	mockStorage.SetData("owner/repo/objects.pack", []byte("pack"))
+	mockStorage.SetData("owner/repo/refs", []byte("refs"))
+	mockStorage.SetData("owner/repo/FORMAT", []byte("1"))
+	mockStorage.SetData("owner/repo/HEAD", []byte("head"))
+
+	err := c.DeleteRemote(ctx)
+	require.NoError(t, err)
+
+	require.Equal(t, 0, mockStorage.Count())
+}
+
+func TestSyncFromStorage_EmptyRepo_NoVersionCheck(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// No data in storage - should succeed without version check
+	ctx := context.Background()
+	err := c.SyncFromStorage(ctx)
+	require.NoError(t, err)
+}
+
+func TestSyncFromStorage_MissingFormat_WithData(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// Has HEAD but no FORMAT — should fail with ErrVersionUnknown
+	hash, err := mockRepo.Commit("initial")
+	require.NoError(t, err)
+	mockStorage.SetData("owner/repo/HEAD", []byte(hash))
+
+	ctx := context.Background()
+	err = c.SyncFromStorage(ctx)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, domain.ErrVersionUnknown))
+}
+
+func TestSyncFromStorage_FutureVersion(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	hash, err := mockRepo.Commit("initial")
+	require.NoError(t, err)
+	mockStorage.SetData("owner/repo/HEAD", []byte(hash))
+	mockStorage.SetData("owner/repo/FORMAT", []byte("99"))
+
+	ctx := context.Background()
+	err = c.SyncFromStorage(ctx)
+	require.Error(t, err)
+	require.True(t, errors.Is(err, domain.ErrVersionTooNew))
 }
