@@ -221,7 +221,11 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 				} else if !formatInfo.Detected {
 					// Only warn if remote exists (no FORMAT on an initialized remote is a problem)
 					existsRemote, existsErr := cacheRepo.ExistsRemote(ctx)
-					if existsErr == nil && existsRemote {
+					if existsErr != nil {
+						out.Println("ERROR")
+						out.Printf("  Error checking remote: %v\n", existsErr)
+						allOK = false
+					} else if existsRemote {
 						out.Println("MISSING")
 						out.Println("  Remote has data but no FORMAT marker")
 						allOK = false
