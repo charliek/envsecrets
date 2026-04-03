@@ -192,6 +192,35 @@ func (pc *ProjectContext) GetFileStatuses() ([]domain.FileStatus, error) {
 	return statuses, nil
 }
 
+// statusCounts holds the summary counts for file statuses
+type statusCounts struct {
+	Added     int
+	Modified  int
+	Deleted   int
+	Unchanged int
+	NotSynced int
+}
+
+// countFileStatuses categorizes file statuses and returns summary counts
+func countFileStatuses(statuses []domain.FileStatus) statusCounts {
+	var c statusCounts
+	for _, s := range statuses {
+		switch {
+		case !s.LocalExists && !s.CacheExists:
+			c.NotSynced++
+		case s.LocalExists && !s.CacheExists:
+			c.Added++
+		case !s.LocalExists && s.CacheExists:
+			c.Deleted++
+		case s.Modified:
+			c.Modified++
+		default:
+			c.Unchanged++
+		}
+	}
+	return c
+}
+
 // extractReposFromObjects extracts unique owner/repo combinations from storage paths
 func extractReposFromObjects(objects []string) map[string]bool {
 	repos := make(map[string]bool)

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/charliek/envsecrets/internal/constants"
@@ -209,6 +210,70 @@ func (c *Cache) ListTrackedFiles() ([]string, error) {
 	return files, nil
 }
 
+// MaxFormatFileSize is the maximum size of a FORMAT file (64 bytes)
+const MaxFormatFileSize = 64
+
+// DetectRemoteVersion reads the FORMAT marker from cloud storage and returns
+// the storage format version info. If no FORMAT file exists, returns Version=0.
+func (c *Cache) DetectRemoteVersion(ctx context.Context) (*domain.StorageFormatInfo, error) {
+	formatPath := c.repoInfo.CachePath() + "/" + constants.StorageFormatFile
+	r, err := c.storage.Download(ctx, formatPath)
+	if err != nil {
+		if errors.Is(err, domain.ErrFileNotFound) {
+			return &domain.StorageFormatInfo{Version: 0, Detected: false}, nil
+		}
+		return nil, domain.Errorf(domain.ErrDownloadFailed, "failed to download FORMAT: %v", err)
+	}
+
+	data, readErr := limitedio.LimitedReadAll(r, MaxFormatFileSize, "FORMAT file")
+	closeErr := r.Close()
+	if readErr != nil {
+		return nil, domain.Errorf(domain.ErrDownloadFailed, "failed to read FORMAT: %v", readErr)
+	}
+	if closeErr != nil {
+		return nil, domain.Errorf(domain.ErrDownloadFailed, "failed to close FORMAT reader: %v", closeErr)
+	}
+
+	versionStr := strings.TrimSpace(string(data))
+	if versionStr == "" {
+		return nil, domain.Errorf(domain.ErrDownloadFailed, "FORMAT file is empty")
+	}
+
+	version, err := strconv.Atoi(versionStr)
+	if err != nil {
+		return nil, domain.Errorf(domain.ErrDownloadFailed, "FORMAT file contains non-numeric content: %q", versionStr)
+	}
+	if version <= 0 {
+		return nil, domain.Errorf(domain.ErrDownloadFailed, "FORMAT file contains invalid version: %d", version)
+	}
+
+	return &domain.StorageFormatInfo{Version: version, Detected: true}, nil
+}
+
+// CheckVersionCompatibility validates that the detected storage format version
+// is compatible with this client.
+func CheckVersionCompatibility(info *domain.StorageFormatInfo) error {
+	if !info.Detected {
+		return domain.Errorf(domain.ErrVersionUnknown,
+			"no FORMAT marker found; this repository may use an incompatible storage format — run 'envsecrets delete <repo>' and re-push with the current version")
+	}
+	if info.Version > constants.CurrentFormatVersion {
+		return domain.Errorf(domain.ErrVersionTooNew,
+			"remote storage format v%d is not supported by this client (supports v%d); upgrade envsecrets",
+			info.Version, constants.CurrentFormatVersion)
+	}
+	return nil
+}
+
+// WriteFormatMarker uploads the format version marker to cloud storage.
+func (c *Cache) WriteFormatMarker(ctx context.Context, version int) error {
+	formatPath := c.repoInfo.CachePath() + "/" + constants.StorageFormatFile
+	if err := c.storage.Upload(ctx, formatPath, strings.NewReader(strconv.Itoa(version))); err != nil {
+		return domain.Errorf(domain.ErrUploadFailed, "failed to upload FORMAT: %v", err)
+	}
+	return nil
+}
+
 // SyncToStorage uploads the cache to cloud storage using packfile format.
 // Uploads objects.pack (all git objects), refs (branch/tag info), and HEAD.
 func (c *Cache) SyncToStorage(ctx context.Context) error {
@@ -243,6 +308,11 @@ func (c *Cache) SyncToStorage(ctx context.Context) error {
 
 	if err := c.storage.Upload(ctx, prefix+"/refs", &refsBuf); err != nil {
 		return domain.Errorf(domain.ErrUploadFailed, "failed to upload refs: %v", err)
+	}
+
+	// Upload FORMAT marker before HEAD (HEAD is the existence marker, so it must be last)
+	if err := c.WriteFormatMarker(ctx, constants.CurrentFormatVersion); err != nil {
+		return err
 	}
 
 	// Upload HEAD
@@ -341,12 +411,11 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 		}
 	}
 
-	// Download HEAD and checkout to populate working tree
+	// Download HEAD to check if remote has data and get the commit hash
 	headReader, err := c.storage.Download(ctx, prefix+"/HEAD")
 	if err != nil {
-		// Only ignore "not found" errors (empty repo case)
 		if errors.Is(err, domain.ErrFileNotFound) {
-			return nil // No HEAD means empty repo
+			return nil // No HEAD means empty repo — skip version check
 		}
 		return domain.Errorf(domain.ErrDownloadFailed, "failed to download HEAD: %v", err)
 	}
@@ -358,6 +427,15 @@ func (c *Cache) SyncFromStorage(ctx context.Context) error {
 	}
 	if closeErr != nil {
 		return domain.Errorf(domain.ErrDownloadFailed, "failed to close HEAD reader: %v", closeErr)
+	}
+
+	// Remote has data (HEAD exists) — validate format version
+	info, err := c.DetectRemoteVersion(ctx)
+	if err != nil {
+		return err
+	}
+	if err := CheckVersionCompatibility(info); err != nil {
+		return err
 	}
 
 	head := strings.TrimSpace(string(headData))
@@ -427,7 +505,7 @@ func (c *Cache) DeleteRemote(ctx context.Context) error {
 	prefix := c.repoInfo.CachePath()
 
 	// Delete known packfile-format files
-	for _, name := range []string{"/objects.pack", "/refs", "/HEAD"} {
+	for _, name := range []string{"/objects.pack", "/refs", "/" + constants.StorageFormatFile, "/HEAD"} {
 		if err := c.storage.Delete(ctx, prefix+name); err != nil {
 			// Ignore not-found errors for individual files
 			if !errors.Is(err, domain.ErrFileNotFound) {

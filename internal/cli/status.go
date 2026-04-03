@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/spf13/cobra"
@@ -54,6 +55,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 			}
 			out.Println("Remote HEAD:", remoteHead)
 		}
+
+		formatInfo, err := pc.Cache.DetectRemoteVersion(ctx)
+		if err == nil {
+			if formatInfo.Detected {
+				out.Printf("Storage format: v%d\n", formatInfo.Version)
+			} else {
+				out.Println("Storage format: unknown (no FORMAT marker)")
+			}
+		}
 	} else {
 		out.Println("Remote: not initialized (run 'envsecrets push' to initialize)")
 	}
@@ -77,23 +87,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// Summary
-	var added, modified, deleted, unchanged int
-	for _, s := range statuses {
-		switch {
-		case s.LocalExists && !s.CacheExists:
-			added++
-		case !s.LocalExists && s.CacheExists:
-			deleted++
-		case s.Modified:
-			modified++
-		default:
-			unchanged++
-		}
-	}
+	counts := countFileStatuses(statuses)
 
 	out.Println()
-	out.Printf("Summary: %d added, %d modified, %d deleted, %d unchanged\n",
-		added, modified, deleted, unchanged)
+	summary := fmt.Sprintf("Summary: %d added, %d modified, %d deleted, %d unchanged",
+		counts.Added, counts.Modified, counts.Deleted, counts.Unchanged)
+	if counts.NotSynced > 0 {
+		summary += fmt.Sprintf(", %d not synced", counts.NotSynced)
+	}
+	out.Println(summary)
 
 	return nil
 }
@@ -122,12 +124,32 @@ func outputStatusJSON(pc *ProjectContext, ctx context.Context) error {
 		}
 	}
 
+	var formatVersion interface{}
+	if existsRemote {
+		formatInfo, err := pc.Cache.DetectRemoteVersion(ctx)
+		if err == nil {
+			formatVersion = formatInfo
+		} else if remoteError == "" {
+			remoteError = err.Error()
+		}
+	}
+
+	counts := countFileStatuses(statuses)
+
 	data := map[string]interface{}{
-		"repository":    pc.RepoInfo.String(),
-		"bucket":        cfg.Bucket,
-		"remote_exists": existsRemote,
-		"remote_head":   remoteHead,
-		"files":         statuses,
+		"repository":     pc.RepoInfo.String(),
+		"bucket":         cfg.Bucket,
+		"remote_exists":  existsRemote,
+		"remote_head":    remoteHead,
+		"storage_format": formatVersion,
+		"files":          statuses,
+		"summary": map[string]int{
+			"added":      counts.Added,
+			"modified":   counts.Modified,
+			"deleted":    counts.Deleted,
+			"unchanged":  counts.Unchanged,
+			"not_synced": counts.NotSynced,
+		},
 	}
 
 	// Include error in JSON output if there was one

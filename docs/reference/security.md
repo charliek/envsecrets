@@ -21,10 +21,10 @@ Local Files → Age Encryption → Local Git Cache → Packfile → GCS
 1. Plaintext files exist only in your project directory
 2. Files are encrypted with age before being written to the local cache
 3. The local cache (`~/.envsecrets/cache/`) is a git repository containing only encrypted `.age` files
-4. All git objects are packed into a packfile and synced to GCS along with refs and HEAD
-5. On pull/sync, the packfile is downloaded and unpacked to restore full git history locally
+4. All git objects are packed into a packfile and synced to GCS along with refs, HEAD, and a FORMAT version marker
+5. On pull/sync, the FORMAT version is validated, then the packfile is downloaded and unpacked to restore full git history locally
 
-**Note:** GCS stores a packfile (all git objects), a refs file (branch info), and a HEAD file. Git history including commit messages, authors, and dates is synced across machines. All file contents in the packfile are encrypted.
+**Note:** GCS stores a FORMAT file (storage version marker), a packfile (all git objects), a refs file (branch info), and a HEAD file. Git history including commit messages, authors, and dates is synced across machines. All file contents in the packfile are encrypted.
 
 ## Passphrase Security
 

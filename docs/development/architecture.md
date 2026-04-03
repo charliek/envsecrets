@@ -82,13 +82,13 @@ cmd/envsecrets
    - Write encrypted file to cache
 6. Commit changes to cache git repo
 7. Conflict check: verify remote HEAD hasn't changed since step 3
-8. Sync to GCS: create packfile of all objects + refs, upload to GCS
+8. Sync to GCS: create packfile of all objects + refs, upload FORMAT version marker, upload HEAD last (HEAD is the existence marker)
 
 ### Pull
 
 1. CLI parses flags and loads config
 2. Project discovery finds repo identity
-3. Sync from GCS: download packfile + refs, restore full git history locally
+3. Sync from GCS: download packfile + refs, validate FORMAT version, restore full git history locally
 4. Checkout requested ref (or HEAD) to populate working tree
 5. For each file in cache:
    - Read encrypted file
@@ -114,9 +114,10 @@ is synced between machines via packfiles stored in GCS.
 ## GCS Storage Layout
 
 ```text
+{owner}/{repo}/FORMAT         # Storage format version marker (contains "1")
 {owner}/{repo}/objects.pack   # Packfile containing all git objects
 {owner}/{repo}/refs           # Text file: refname SP hash LF
-{owner}/{repo}/HEAD           # Current HEAD commit hash
+{owner}/{repo}/HEAD           # Current HEAD commit hash (written last; existence marker)
 ```
 
 Every sync downloads the packfile and restores full git history locally. This
@@ -136,6 +137,8 @@ Sentinel errors in `internal/domain/errors.go` map to exit codes:
 | ErrDecryptFailed | 5 | Decryption failed |
 | ErrUploadFailed | 6 | GCS upload failed |
 | ErrDownloadFailed | 7 | GCS download failed |
+| ErrVersionTooNew | 15 | Storage format version not supported by this client |
+| ErrVersionUnknown | 15 | Storage format marker missing (legacy repository) |
 
 ## Configuration Loading
 

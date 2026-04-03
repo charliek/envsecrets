@@ -177,6 +177,8 @@ func TruncateHash(hash string) string {
 func (o *Output) PrintFileStatus(status domain.FileStatus) {
 	var indicator string
 	switch {
+	case !status.LocalExists && !status.CacheExists:
+		indicator = "?"
 	case !status.LocalExists && status.CacheExists:
 		indicator = "D"
 	case status.LocalExists && !status.CacheExists:
@@ -193,6 +195,8 @@ func (o *Output) PrintFileStatus(status domain.FileStatus) {
 func (o *Output) PrintFileStatusDetailed(status domain.FileStatus) {
 	var indicator string
 	switch {
+	case !status.LocalExists && !status.CacheExists:
+		indicator = "(not synced)"
 	case !status.LocalExists && status.CacheExists:
 		indicator = "(missing locally)"
 	case status.LocalExists && !status.CacheExists:

@@ -48,26 +48,33 @@ const (
 
 	// BytesPerKB is the number of bytes in a kilobyte
 	BytesPerKB = 1024
+
+	// StorageFormatFile is the name of the format version marker in GCS
+	StorageFormatFile = "FORMAT"
+
+	// CurrentFormatVersion is the current storage format version
+	CurrentFormatVersion = 1
 )
 
 // Exit codes
 const (
-	ExitSuccess          = 0
-	ExitNotConfigured    = 1
-	ExitNotInRepo        = 2
-	ExitNoEnvFiles       = 3
-	ExitConflict         = 4
-	ExitDecryptFailed    = 5
-	ExitUploadFailed     = 6
-	ExitDownloadFailed   = 7
-	ExitInvalidConfig    = 8
-	ExitGCSError         = 9
-	ExitGitError         = 10
-	ExitUserCancelled    = 11
-	ExitInvalidArgs      = 12
-	ExitFileNotFound     = 13
-	ExitPermissionDenied = 14
-	ExitUnknownError     = 99
+	ExitSuccess             = 0
+	ExitNotConfigured       = 1
+	ExitNotInRepo           = 2
+	ExitNoEnvFiles          = 3
+	ExitConflict            = 4
+	ExitDecryptFailed       = 5
+	ExitUploadFailed        = 6
+	ExitDownloadFailed      = 7
+	ExitInvalidConfig       = 8
+	ExitGCSError            = 9
+	ExitGitError            = 10
+	ExitUserCancelled       = 11
+	ExitInvalidArgs         = 12
+	ExitFileNotFound        = 13
+	ExitPermissionDenied    = 14
+	ExitVersionIncompatible = 15
+	ExitUnknownError        = 99
 )
 
 // DefaultConfigDir returns the default configuration directory path

@@ -30,6 +30,8 @@ Show repository info and file status.
 envsecrets status
 ```
 
+Displays repository name, bucket, remote sync status, storage format version, and the status of each tracked file. Files are shown as added, modified, deleted (missing locally), unchanged, or not synced (missing both locally and in cache).
+
 ### push
 
 Encrypt and upload environment files.
@@ -126,6 +128,8 @@ envsecrets list [repo]
 Without arguments, lists all repositories. With a repo name, lists files in that repo.
 With `--current`, auto-detects the current repository from git remote.
 
+Internal storage files (FORMAT, HEAD, objects.pack, refs) are filtered from output.
+
 ### rm
 
 Remove a file from tracking.
@@ -152,7 +156,7 @@ envsecrets delete <repo>
 | `--yes-delete-permanently` | Confirm deletion in non-interactive mode |
 | `--dry-run` | Show what would be deleted without deleting |
 
-Requires confirmation in interactive mode.
+Requires confirmation in interactive mode. This is also the remediation command for legacy repositories that lack a FORMAT version marker — delete the remote and re-push with the current version.
 
 ### rotate-passphrase
 
@@ -168,7 +172,7 @@ envsecrets rotate-passphrase
 
 ### verify
 
-Test decryption across all repositories.
+Test decryption across all repositories. Reports the storage format version and number of files verified per repo.
 
 ```bash
 envsecrets verify
@@ -197,6 +201,8 @@ envsecrets doctor [flags]
 | Flag | Description |
 |------|-------------|
 | `--fix` | Attempt to repair corrupted cache |
+
+Checks configuration, GCS connectivity, passphrase, encryption, git repo, cache health, and storage format version.
 
 The `--fix` flag will:
 - Remove corrupted cache directories
@@ -232,4 +238,5 @@ envsecrets completion fish
 | 12 | Invalid arguments |
 | 13 | File or repository not found |
 | 14 | Permission denied |
+| 15 | Version incompatible (storage FORMAT missing or unsupported) |
 | 99 | Unknown error |

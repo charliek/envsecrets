@@ -5,6 +5,7 @@ import (
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/config"
+	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/crypto"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
@@ -208,6 +209,34 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 						status = "OK (empty)"
 					}
 					out.Println(status)
+				}
+
+				// Check storage format version
+				out.Printf("Storage format: ")
+				formatInfo, err := cacheRepo.DetectRemoteVersion(ctx)
+				if err != nil {
+					out.Println("ERROR")
+					out.Printf("  Error: %v\n", err)
+					allOK = false
+				} else if !formatInfo.Detected {
+					// Only warn if remote exists (no FORMAT on an initialized remote is a problem)
+					existsRemote, existsErr := cacheRepo.ExistsRemote(ctx)
+					if existsErr != nil {
+						out.Println("ERROR")
+						out.Printf("  Error checking remote: %v\n", existsErr)
+						allOK = false
+					} else if existsRemote {
+						out.Println("MISSING")
+						out.Println("  Remote has data but no FORMAT marker")
+						allOK = false
+					} else {
+						out.Println("N/A (remote not initialized)")
+					}
+				} else if formatInfo.Version > constants.CurrentFormatVersion {
+					out.Printf("v%d (UNSUPPORTED — this client supports v%d)\n", formatInfo.Version, constants.CurrentFormatVersion)
+					allOK = false
+				} else {
+					out.Printf("v%d\n", formatInfo.Version)
 				}
 			}
 		}

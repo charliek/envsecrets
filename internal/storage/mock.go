@@ -15,6 +15,9 @@ type MockStorage struct {
 	mu      sync.RWMutex
 	objects map[string][]byte
 
+	// UploadOrder tracks the order of Upload calls by path
+	UploadOrder []string
+
 	// For error injection
 	UploadError   error
 	DownloadError error
@@ -44,6 +47,7 @@ func (m *MockStorage) Upload(ctx context.Context, path string, r io.Reader) erro
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.objects[path] = data
+	m.UploadOrder = append(m.UploadOrder, path)
 	return nil
 }
 
