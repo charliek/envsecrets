@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/charliek/envsecrets/internal/constants"
@@ -12,7 +13,7 @@ import (
 // Push encrypts and uploads environment files
 func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult, error) {
 	// Sync from storage first to get full history and latest state
-	if err := s.syncBeforePush(ctx); err != nil {
+	if err := s.syncBeforePush(ctx, opts.DryRun); err != nil {
 		return nil, err
 	}
 
@@ -29,7 +30,10 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 	// Get files to track
 	files, err := s.discovery.EnvFiles()
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, domain.ErrNoFilesTracked) {
+			return nil, err
+		}
+		files = nil // No tracked files — orphan cleanup will handle removals
 	}
 
 	result := &domain.PushResult{}
@@ -93,6 +97,26 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		}
 	}
 
+	// Clean up orphaned cache files (in cache but no longer tracked)
+	cachedFiles, err := s.cache.ListTrackedFiles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cached files: %w", err)
+	}
+	trackedSet := make(map[string]bool, len(files))
+	for _, f := range files {
+		trackedSet[f] = true
+	}
+	for _, cached := range cachedFiles {
+		if !trackedSet[cached] {
+			if !opts.DryRun {
+				if err := s.cache.RemoveEncrypted(cached); err != nil {
+					return nil, fmt.Errorf("failed to remove orphaned %s: %w", cached, err)
+				}
+			}
+			result.FilesDeleted++
+		}
+	}
+
 	// Nothing to push
 	if result.FilesAdded == 0 && result.FilesUpdated == 0 && result.FilesDeleted == 0 {
 		return nil, domain.ErrNothingToCommit
@@ -138,7 +162,7 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 
 // syncBeforePush syncs from storage to get the latest history, then fast-forwards
 // the local branch if needed so new commits build on top of remote HEAD.
-func (s *Syncer) syncBeforePush(ctx context.Context) error {
+func (s *Syncer) syncBeforePush(ctx context.Context, dryRun bool) error {
 	// Check if remote exists
 	exists, err := s.cache.ExistsRemote(ctx)
 	if err != nil {
@@ -173,9 +197,17 @@ func (s *Syncer) syncBeforePush(ctx context.Context) error {
 			}
 		}
 	} else {
-		// No remote - just ensure cache is initialized
-		if err := s.EnsureCacheInitialized(ctx); err != nil {
-			return err
+		// No remote — if local cache has stale data, reset it so push
+		// correctly detects all files as new. Skip the destructive reset
+		// during dry-run to keep it side-effect-free.
+		if !dryRun && s.cache.Exists() {
+			if err := s.cache.Reset(ctx); err != nil {
+				return err
+			}
+		} else if !s.cache.Exists() {
+			if err := s.cache.Init(); err != nil {
+				return err
+			}
 		}
 	}
 

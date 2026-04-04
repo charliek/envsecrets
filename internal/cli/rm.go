@@ -88,23 +88,19 @@ func runRm(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Remove from cache if it exists
-	if err := pc.Cache.RemoveEncrypted(filename); err != nil {
-		// Log cache removal errors at verbose level (file may not exist in cache yet)
-		out.Verbose("Note: could not remove from cache: %v", err)
-	}
-
-	// Push changes
-	syncer := sync.NewSyncer(pc.Discovery, pc.RepoInfo, pc.Storage, pc.Encrypter, pc.Cache)
-	_, err = syncer.Push(ctx, sync.PushOptions{
-		Message: "Remove " + filename,
-	})
-	if err != nil {
-		// Only ignore "nothing to commit" - warn about other errors
-		if errors.Is(err, domain.ErrNothingToCommit) {
-			out.Verbose("Note: %v", err)
-		} else {
-			out.Warn("Warning: failed to push removal to remote: %v", err)
+	if !rmDryRun {
+		// Push changes — orphan cleanup in Push handles cache removal
+		syncer := sync.NewSyncer(pc.Discovery, pc.RepoInfo, pc.Storage, pc.Encrypter, pc.Cache)
+		_, err = syncer.Push(ctx, sync.PushOptions{
+			Message: "Remove " + filename,
+		})
+		if err != nil {
+			// Only ignore "nothing to commit" - warn about other errors
+			if errors.Is(err, domain.ErrNothingToCommit) {
+				out.Verbose("Note: %v", err)
+			} else {
+				out.Warn("Warning: failed to push removal to remote: %v; run 'envsecrets push' to sync", err)
+			}
 		}
 	}
 

@@ -42,9 +42,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	out.Println()
 
 	// Check remote status
-	existsRemote, err := pc.Cache.ExistsRemote(ctx)
-	if err != nil {
-		out.Warn("Could not check remote status: %v", err)
+	existsRemote, remoteErr := pc.Cache.ExistsRemote(ctx)
+	if remoteErr != nil {
+		out.Warn("Could not check remote status: %v", remoteErr)
 	} else if existsRemote {
 		out.Println("Remote: initialized")
 
@@ -66,6 +66,18 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 	} else {
 		out.Println("Remote: not initialized (run 'envsecrets push' to initialize)")
+	}
+
+	// Sync cache for accurate file status
+	if existsRemote {
+		if err := pc.Cache.SyncFromStorage(ctx); err != nil {
+			out.Warn("Could not sync from remote (status may be stale): %v", err)
+		}
+	} else if remoteErr == nil && pc.Cache.Exists() {
+		// Remote is confirmed empty (not just unreachable) but cache has stale data
+		if err := pc.Cache.Reset(ctx); err != nil {
+			out.Warn("Could not reset stale cache: %v", err)
+		}
 	}
 
 	out.Println()
@@ -103,17 +115,33 @@ func runStatus(cmd *cobra.Command, args []string) error {
 func outputStatusJSON(pc *ProjectContext, ctx context.Context) error {
 	out := GetOutput()
 
-	statuses, err := pc.GetFileStatuses()
-	if err != nil {
-		return err
-	}
-
 	// For JSON output, we still want to include the data even if remote checks fail
 	// but we include any errors in the output
 	var remoteError string
 	existsRemote, err := pc.Cache.ExistsRemote(ctx)
 	if err != nil {
 		remoteError = err.Error()
+	}
+
+	// Sync cache for accurate file status
+	if existsRemote {
+		if err := pc.Cache.SyncFromStorage(ctx); err != nil {
+			if remoteError == "" {
+				remoteError = err.Error()
+			}
+		}
+	} else if remoteError == "" && pc.Cache.Exists() {
+		// Remote is confirmed empty (not just unreachable) but cache has stale data
+		if err := pc.Cache.Reset(ctx); err != nil {
+			if remoteError == "" {
+				remoteError = err.Error()
+			}
+		}
+	}
+
+	statuses, err := pc.GetFileStatuses()
+	if err != nil {
+		return err
 	}
 
 	remoteHead := ""

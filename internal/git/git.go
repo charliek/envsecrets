@@ -99,7 +99,11 @@ func NewGoGitRepository(path string) (*GoGitRepository, error) {
 // Init implements Repository.Init
 func (r *GoGitRepository) Init() error {
 	if r.repo != nil {
-		return nil // Already initialized
+		// Verify the repo still exists on disk (may have been deleted by Reset)
+		if _, err := os.Stat(filepath.Join(r.path, ".git")); err == nil {
+			return nil // Already initialized and exists
+		}
+		r.repo = nil // Stale handle — reinitialize
 	}
 
 	// Create directory if it doesn't exist with restrictive permissions
