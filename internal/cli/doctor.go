@@ -9,6 +9,7 @@ import (
 	"github.com/charliek/envsecrets/internal/crypto"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
+	"github.com/charliek/envsecrets/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -237,6 +238,42 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 					allOK = false
 				} else {
 					out.Printf("v%d\n", formatInfo.Version)
+				}
+
+				// Check remote sync status
+				out.Printf("Remote status: ")
+				existsRemote, existsErr := cacheRepo.ExistsRemote(ctx)
+				if existsErr != nil {
+					out.Println("ERROR")
+					out.Printf("  Error: %v\n", existsErr)
+					allOK = false
+				} else if !existsRemote {
+					if health.Exists && health.FileCount > 0 {
+						out.Println("STALE CACHE")
+						out.Println("  Local cache has data but remote is empty")
+						out.Println("  Run 'envsecrets push' to re-upload, or 'envsecrets doctor --fix' to reset cache")
+						allOK = false
+					} else {
+						out.Println("Not initialized (run 'envsecrets push' to initialize)")
+					}
+				} else {
+					remoteHead, remoteErr := cacheRepo.GetRemoteHead(ctx)
+					if remoteErr != nil {
+						out.Println("ERROR")
+						out.Printf("  Error reading remote HEAD: %v\n", remoteErr)
+						allOK = false
+					} else {
+						localHead, _ := cacheRepo.Head()
+						switch localHead {
+						case remoteHead:
+							out.Printf("OK (in sync, HEAD %s)\n", ui.TruncateHash(remoteHead))
+						case "":
+							out.Println("OK (remote has data, local cache empty — run 'envsecrets pull')")
+						default:
+							out.Printf("OUT OF SYNC (local %s, remote %s)\n", ui.TruncateHash(localHead), ui.TruncateHash(remoteHead))
+							out.Println("  Run 'envsecrets pull' or 'envsecrets push' to sync")
+						}
+					}
 				}
 			}
 		}

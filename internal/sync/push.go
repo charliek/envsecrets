@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/charliek/envsecrets/internal/constants"
@@ -29,7 +30,10 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 	// Get files to track
 	files, err := s.discovery.EnvFiles()
 	if err != nil {
-		return nil, err
+		if !errors.Is(err, domain.ErrNoFilesTracked) {
+			return nil, err
+		}
+		files = nil // No tracked files — orphan cleanup will handle removals
 	}
 
 	result := &domain.PushResult{}
@@ -90,6 +94,26 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		// Write to cache
 		if err := s.cache.WriteEncrypted(file, encrypted); err != nil {
 			return nil, fmt.Errorf("failed to write %s to cache: %w", file, err)
+		}
+	}
+
+	// Clean up orphaned cache files (in cache but no longer tracked)
+	cachedFiles, err := s.cache.ListTrackedFiles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cached files: %w", err)
+	}
+	trackedSet := make(map[string]bool, len(files))
+	for _, f := range files {
+		trackedSet[f] = true
+	}
+	for _, cached := range cachedFiles {
+		if !trackedSet[cached] {
+			if !opts.DryRun {
+				if err := s.cache.RemoveEncrypted(cached); err != nil {
+					return nil, fmt.Errorf("failed to remove orphaned %s: %w", cached, err)
+				}
+			}
+			result.FilesDeleted++
 		}
 	}
 
@@ -173,9 +197,16 @@ func (s *Syncer) syncBeforePush(ctx context.Context) error {
 			}
 		}
 	} else {
-		// No remote - just ensure cache is initialized
-		if err := s.EnsureCacheInitialized(ctx); err != nil {
-			return err
+		// No remote — if local cache has stale data, reset it so push
+		// correctly detects all files as new.
+		if s.cache.Exists() {
+			if err := s.cache.Reset(ctx); err != nil {
+				return err
+			}
+		} else {
+			if err := s.cache.Init(); err != nil {
+				return err
+			}
 		}
 	}
 
