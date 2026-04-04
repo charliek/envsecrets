@@ -13,7 +13,7 @@ import (
 // Push encrypts and uploads environment files
 func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult, error) {
 	// Sync from storage first to get full history and latest state
-	if err := s.syncBeforePush(ctx); err != nil {
+	if err := s.syncBeforePush(ctx, opts.DryRun); err != nil {
 		return nil, err
 	}
 
@@ -162,7 +162,7 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 
 // syncBeforePush syncs from storage to get the latest history, then fast-forwards
 // the local branch if needed so new commits build on top of remote HEAD.
-func (s *Syncer) syncBeforePush(ctx context.Context) error {
+func (s *Syncer) syncBeforePush(ctx context.Context, dryRun bool) error {
 	// Check if remote exists
 	exists, err := s.cache.ExistsRemote(ctx)
 	if err != nil {
@@ -198,12 +198,13 @@ func (s *Syncer) syncBeforePush(ctx context.Context) error {
 		}
 	} else {
 		// No remote — if local cache has stale data, reset it so push
-		// correctly detects all files as new.
-		if s.cache.Exists() {
+		// correctly detects all files as new. Skip the destructive reset
+		// during dry-run to keep it side-effect-free.
+		if !dryRun && s.cache.Exists() {
 			if err := s.cache.Reset(ctx); err != nil {
 				return err
 			}
-		} else {
+		} else if !s.cache.Exists() {
 			if err := s.cache.Init(); err != nil {
 				return err
 			}

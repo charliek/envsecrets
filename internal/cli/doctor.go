@@ -272,6 +272,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 						default:
 							out.Printf("OUT OF SYNC (local %s, remote %s)\n", ui.TruncateHash(localHead), ui.TruncateHash(remoteHead))
 							out.Println("  Run 'envsecrets pull' or 'envsecrets push' to sync")
+							allOK = false
 						}
 					}
 				}
