@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.4
+
+- Fix stale local cache in multi-machine scenarios by fetching latest remote state before push/pull operations
+
 ## v0.0.3
 
 - Add storage format versioning with FORMAT marker file in GCS to prevent future incompatibilities
