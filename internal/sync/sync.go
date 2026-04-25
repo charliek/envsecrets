@@ -1,7 +1,9 @@
 package sync
 
 import (
+	"bytes"
 	"context"
+	"errors"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/crypto"
@@ -75,34 +77,222 @@ type PullOptions struct {
 	ConflictResolver ConflictResolver
 }
 
-// GetSyncStatus returns the sync status between local and remote
+// GetSyncStatus computes a complete sync status: heads, last-synced marker,
+// per-file 3-way classification, and a recommended action. Performs a remote
+// fetch (SyncFromStorage) so the cache reflects current remote state.
 func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) {
 	status := &domain.SyncStatus{}
 
-	// Get local head
-	localHead, err := s.cache.Head()
+	// Read last-synced marker first (works even with no remote)
+	lastSynced, lastSyncedAt, _ := s.cache.ReadLastSynced()
+	status.LastSynced = lastSynced
+	status.LastSyncedAt = lastSyncedAt
+
+	// Check remote
+	remoteExists, err := s.cache.ExistsRemote(ctx)
 	if err != nil {
-		if err == domain.ErrNotInitialized {
-			localHead = ""
-		} else {
+		return nil, err
+	}
+
+	if remoteExists {
+		// Sync cache so cache@HEAD reflects remote
+		if err := s.cache.SyncFromStorage(ctx); err != nil {
 			return nil, err
 		}
+		rh, err := s.cache.GetRemoteHead(ctx)
+		if err == nil {
+			status.RemoteHead = rh
+		}
+		// Pull commit metadata for the remote HEAD (author + when)
+		if commits, err := s.cache.Log(1, false); err == nil && len(commits) > 0 {
+			status.RemoteAuthor = commits[0].Author
+			status.RemoteCommittedAt = commits[0].Date
+		}
 	}
-	status.LocalHead = localHead
 
-	// Get remote head
-	remoteHead, err := s.cache.GetRemoteHead(ctx)
-	if err != nil {
-		// Remote doesn't exist yet
-		status.RemoteHead = ""
-	} else {
-		status.RemoteHead = remoteHead
+	// Local head (after sync, this equals remote when remote exists)
+	if lh, err := s.cache.Head(); err == nil {
+		status.LocalHead = lh
+	}
+	status.InSync = status.LocalHead != "" && status.LocalHead == status.RemoteHead
+
+	// Determine baseline cases that don't need a 3-way diff
+	files, fileErr := s.discoveryEnvFiles()
+	switch {
+	case errors.Is(fileErr, domain.ErrNoFilesTracked):
+		status.Action = domain.SyncActionNothingTracked
+		return status, nil
+	case fileErr != nil:
+		return nil, fileErr
+	case len(files) == 0:
+		status.Action = domain.SyncActionNothingTracked
+		return status, nil
 	}
 
-	// Determine sync status
-	status.InSync = status.LocalHead == status.RemoteHead
+	if !remoteExists {
+		status.Action = domain.SyncActionFirstPushInit
+		return status, nil
+	}
+
+	if lastSynced == "" {
+		// Cache reflects remote, but we have no baseline. We can still tell
+		// the user *something*: if every working-tree file matches the cache
+		// content (i.e. someone just pulled and is in sync), call it InSync.
+		// Otherwise recommend a first pull to establish a baseline.
+		anyDifference, err := s.anyWorkingTreeDiffersFromCache(files)
+		if err != nil {
+			return nil, err
+		}
+		if !anyDifference {
+			status.Action = domain.SyncActionInSync
+		} else {
+			status.Action = domain.SyncActionFirstPull
+		}
+		return status, nil
+	}
+
+	// Three-way classification: each tracked file vs (base=LastSynced, remote=HEAD, local=working tree)
+	if err := s.classifyFiles(files, lastSynced, status); err != nil {
+		return nil, err
+	}
+
+	// Decide action from the three sets
+	switch {
+	case len(status.LocalChanges) == 0 && len(status.RemoteChanges) == 0:
+		status.Action = domain.SyncActionInSync
+	case len(status.Conflicts) > 0:
+		status.Action = domain.SyncActionReconcile
+	case len(status.LocalChanges) > 0 && len(status.RemoteChanges) > 0:
+		status.Action = domain.SyncActionPullThenPush
+	case len(status.LocalChanges) > 0:
+		status.Action = domain.SyncActionPush
+	case len(status.RemoteChanges) > 0:
+		status.Action = domain.SyncActionPull
+	}
 
 	return status, nil
+}
+
+// classifyFiles fills in LocalChanges/RemoteChanges/Conflicts on status.
+func (s *Syncer) classifyFiles(files []string, baseRef string, status *domain.SyncStatus) error {
+	for _, f := range files {
+		baseBytes, baseExists, err := s.readCacheAtRef(f, baseRef)
+		if err != nil {
+			return err
+		}
+		remoteBytes, remoteExists, err := s.readCacheAtHead(f)
+		if err != nil {
+			return err
+		}
+		localBytes, localExists, err := s.readWorkingTree(f)
+		if err != nil {
+			return err
+		}
+
+		localChanged := !sameContent(baseBytes, baseExists, localBytes, localExists)
+		remoteChanged := !sameContent(baseBytes, baseExists, remoteBytes, remoteExists)
+
+		if localChanged {
+			status.LocalChanges = append(status.LocalChanges, f)
+		}
+		if remoteChanged {
+			status.RemoteChanges = append(status.RemoteChanges, f)
+		}
+		if localChanged && remoteChanged && !sameContent(localBytes, localExists, remoteBytes, remoteExists) {
+			status.Conflicts = append(status.Conflicts, f)
+		}
+	}
+	return nil
+}
+
+// readCacheAtRef returns the decrypted file content at a specific ref, plus
+// whether the file existed at that ref. Missing file is not an error.
+func (s *Syncer) readCacheAtRef(file, ref string) ([]byte, bool, error) {
+	encrypted, err := s.cache.ReadEncryptedAtRef(file, ref)
+	if err != nil {
+		if errors.Is(err, domain.ErrFileNotFound) || errors.Is(err, domain.ErrRefNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	plain, err := s.encrypter.Decrypt(encrypted)
+	if err != nil {
+		return nil, false, err
+	}
+	return plain, true, nil
+}
+
+// readCacheAtHead returns the decrypted file content at HEAD (= remote after
+// SyncFromStorage), plus existence. Missing file is not an error.
+func (s *Syncer) readCacheAtHead(file string) ([]byte, bool, error) {
+	encrypted, err := s.cache.ReadEncrypted(file)
+	if err != nil {
+		if errors.Is(err, domain.ErrFileNotFound) || errors.Is(err, domain.ErrNotInitialized) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	plain, err := s.encrypter.Decrypt(encrypted)
+	if err != nil {
+		return nil, false, err
+	}
+	return plain, true, nil
+}
+
+// readWorkingTree returns the project-directory content of file, plus existence.
+func (s *Syncer) readWorkingTree(file string) ([]byte, bool, error) {
+	if s.discovery == nil {
+		return nil, false, nil
+	}
+	if !s.discovery.FileExists(file) {
+		return nil, false, nil
+	}
+	content, err := s.discovery.ReadFile(file)
+	if err != nil {
+		return nil, false, err
+	}
+	return content, true, nil
+}
+
+// anyWorkingTreeDiffersFromCache reports whether at least one tracked file's
+// working-tree content disagrees with cache@HEAD. Used for first-pull
+// detection when no LAST_SYNCED baseline is available.
+func (s *Syncer) anyWorkingTreeDiffersFromCache(files []string) (bool, error) {
+	for _, f := range files {
+		remote, remoteExists, err := s.readCacheAtHead(f)
+		if err != nil {
+			return false, err
+		}
+		local, localExists, err := s.readWorkingTree(f)
+		if err != nil {
+			return false, err
+		}
+		if !sameContent(remote, remoteExists, local, localExists) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// sameContent reports whether two (bytes, exists) pairs represent the same
+// state — both absent, or both present and byte-equal.
+func sameContent(a []byte, aExists bool, b []byte, bExists bool) bool {
+	if aExists != bExists {
+		return false
+	}
+	if !aExists {
+		return true
+	}
+	return bytes.Equal(a, b)
+}
+
+// discoveryEnvFiles returns the tracked file list, propagating ErrNoFilesTracked
+// distinctly so callers can treat "nothing to track" as a soft state, not an error.
+func (s *Syncer) discoveryEnvFiles() ([]string, error) {
+	if s.discovery == nil {
+		return nil, domain.ErrNotInRepo
+	}
+	return s.discovery.EnvFiles()
 }
 
 // EnsureCacheInitialized ensures the cache is initialized

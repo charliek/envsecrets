@@ -114,6 +114,7 @@ func init() {
 	rootCmd.AddCommand(encodeCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(pushCmd)
 	rootCmd.AddCommand(pullCmd)
 	rootCmd.AddCommand(logCmd)

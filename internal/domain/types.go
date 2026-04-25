@@ -50,14 +50,54 @@ type FileStatus struct {
 	Modified bool `json:"modified"`
 }
 
+// SyncAction represents the recommended next action for the user
+type SyncAction string
+
+const (
+	// SyncActionInSync means local and remote agree; nothing to do
+	SyncActionInSync SyncAction = "in_sync"
+	// SyncActionPush means the user has local-only changes
+	SyncActionPush SyncAction = "push"
+	// SyncActionPull means the user has remote-only changes
+	SyncActionPull SyncAction = "pull"
+	// SyncActionPullThenPush means both sides changed but no overlap
+	SyncActionPullThenPush SyncAction = "pull_then_push"
+	// SyncActionReconcile means both sides changed the same files differently
+	SyncActionReconcile SyncAction = "reconcile"
+	// SyncActionFirstPushInit means remote is empty; push to initialize
+	SyncActionFirstPushInit SyncAction = "first_push_init"
+	// SyncActionFirstPull means we have no local baseline yet but remote has commits
+	SyncActionFirstPull SyncAction = "first_pull"
+	// SyncActionNothingTracked means .envsecrets has no files listed
+	SyncActionNothingTracked SyncAction = "nothing_tracked"
+)
+
 // SyncStatus represents the sync status between local and remote
 type SyncStatus struct {
 	// LocalHead is the local HEAD commit hash
 	LocalHead string `json:"local_head"`
 	// RemoteHead is the remote HEAD commit hash
 	RemoteHead string `json:"remote_head"`
-	// InSync indicates if local and remote are in sync
+	// LastSynced is the commit this machine last successfully pushed or pulled to.
+	// Empty if this machine has never synced (fresh clone or post-Reset).
+	LastSynced string `json:"last_synced,omitempty"`
+	// LastSyncedAt is the wall-clock time this machine last synced (file mtime).
+	// Zero if LastSynced is empty.
+	LastSyncedAt time.Time `json:"last_synced_at,omitempty"`
+	// InSync indicates if local and remote are at the same commit
 	InSync bool `json:"in_sync"`
+	// LocalChanges lists files where the working tree differs from LastSynced
+	LocalChanges []string `json:"local_changes,omitempty"`
+	// RemoteChanges lists files where remote HEAD differs from LastSynced
+	RemoteChanges []string `json:"remote_changes,omitempty"`
+	// Conflicts lists files that changed locally AND remotely to different content
+	Conflicts []string `json:"conflicts,omitempty"`
+	// Action is the recommended next action for the user
+	Action SyncAction `json:"action"`
+	// RemoteAuthor is the author of the remote HEAD commit (empty if no remote)
+	RemoteAuthor string `json:"remote_author,omitempty"`
+	// RemoteCommittedAt is when the remote HEAD commit was authored
+	RemoteCommittedAt time.Time `json:"remote_committed_at,omitempty"`
 }
 
 // PushResult contains the result of a push operation

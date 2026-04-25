@@ -108,6 +108,14 @@ func runPush(cmd *cobra.Command, args []string) error {
 			out.Println("Nothing to push - all files are up to date")
 			return nil
 		}
+		// ErrDivergedHistory needs a friendly hint above the raw error so the
+		// user sees the recommended next step on the first line.
+		if errors.Is(err, domain.ErrDivergedHistory) {
+			out.Warn("push refused: another machine pushed changes that overlap with yours.")
+			out.Println("  Resolve with: envsecrets pull   (interactive: keep-local or overwrite per file)")
+			out.Println("  Then: envsecrets push")
+			out.Println("  Or override: envsecrets push --force   (drops remote changes for overlapping files)")
+		}
 		return err
 	}
 

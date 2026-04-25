@@ -167,6 +167,16 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 		result.FilesWithConflicts = nil
 	}
 
+	// Record this machine's new sync baseline only for full-HEAD pulls (not
+	// --ref, which intentionally checks out a historical commit). Best-effort:
+	// a write failure here doesn't roll back successfully-pulled files.
+	if !opts.DryRun && opts.Ref == "" {
+		head, err := s.cache.Head()
+		if err == nil && head != "" {
+			_ = s.cache.WriteLastSynced(head)
+		}
+	}
+
 	return result, nil
 }
 

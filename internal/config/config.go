@@ -26,6 +26,11 @@ type Config struct {
 	// GCSCredentials is base64-encoded service account JSON
 	GCSCredentials string `yaml:"gcs_credentials,omitempty"`
 
+	// MachineID is an optional friendly identifier for this machine, used in
+	// commit author metadata so cross-machine attribution is meaningful.
+	// Defaults to $USER@$hostname when empty.
+	MachineID string `yaml:"machine_id,omitempty"`
+
 	// configPath is the path this config was loaded from (not serialized)
 	configPath string `yaml:"-"`
 }
