@@ -145,5 +145,9 @@ func runPush(cmd *cobra.Command, args []string) error {
 		out.Printf("Commit: %s\n", ui.TruncateHash(result.CommitHash))
 	}
 
+	if result.Warning != "" {
+		out.Warn("%s", result.Warning)
+	}
+
 	return nil
 }

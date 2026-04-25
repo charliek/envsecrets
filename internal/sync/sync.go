@@ -135,19 +135,15 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 	}
 
 	if lastSynced == "" {
-		// Cache reflects remote, but we have no baseline. We can still tell
-		// the user *something*: if every working-tree file matches the cache
-		// content (i.e. someone just pulled and is in sync), call it InSync.
-		// Otherwise recommend a first pull to establish a baseline.
-		anyDifference, err := s.anyWorkingTreeDiffersFromCache(files)
-		if err != nil {
-			return nil, err
-		}
-		if !anyDifference {
-			status.Action = domain.SyncActionInSync
-		} else {
-			status.Action = domain.SyncActionFirstPull
-		}
+		// Cache reflects remote, but this machine has no recorded baseline
+		// (fresh clone, post-Reset, upgraded from old client, or corrupted
+		// marker). Even when the working tree happens to match remote, the
+		// recommendation must be FirstPull — push refuses without a baseline
+		// (see checkPushDivergence in push.go), so claiming InSync would lie
+		// to the user about whether their next push will succeed. The
+		// informational LocalHead/RemoteHead fields above still tell them
+		// the heads agree.
+		status.Action = domain.SyncActionFirstPull
 		return status, nil
 	}
 
@@ -252,26 +248,6 @@ func (s *Syncer) readWorkingTree(file string) ([]byte, bool, error) {
 		return nil, false, err
 	}
 	return content, true, nil
-}
-
-// anyWorkingTreeDiffersFromCache reports whether at least one tracked file's
-// working-tree content disagrees with cache@HEAD. Used for first-pull
-// detection when no LAST_SYNCED baseline is available.
-func (s *Syncer) anyWorkingTreeDiffersFromCache(files []string) (bool, error) {
-	for _, f := range files {
-		remote, remoteExists, err := s.readCacheAtHead(f)
-		if err != nil {
-			return false, err
-		}
-		local, localExists, err := s.readWorkingTree(f)
-		if err != nil {
-			return false, err
-		}
-		if !sameContent(remote, remoteExists, local, localExists) {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // sameContent reports whether two (bytes, exists) pairs represent the same

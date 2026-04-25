@@ -169,14 +169,18 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		return nil, fmt.Errorf("failed to sync to storage: %w", err)
 	}
 
-	// Record this machine's new sync baseline. Best-effort: a write failure
-	// here doesn't roll back the successful push — the next status/push call
-	// will recompute against an older baseline, which is less accurate but
-	// not unsafe.
+	// Record this machine's new sync baseline. Push has already succeeded
+	// remotely, so we do not roll back on failure — but we MUST surface the
+	// failure to the caller. With a stale LAST_SYNCED, the next push's
+	// divergence check will compare against an old baseline and can refuse
+	// with ErrDivergedHistory even though no other machine touched remote.
+	// The user's repair path is `envsecrets pull` (which rewrites the marker)
+	// before the next push.
 	if err := s.cache.WriteLastSynced(hash); err != nil {
-		// Surface as a non-fatal warning via the returned result rather than
-		// failing — push already succeeded remotely.
-		_ = err
+		result.Warning = fmt.Sprintf(
+			"push succeeded but failed to update local sync baseline: %v; run 'envsecrets pull' before the next push to repair",
+			err,
+		)
 	}
 
 	return result, nil

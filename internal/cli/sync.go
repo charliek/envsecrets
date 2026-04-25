@@ -184,6 +184,9 @@ func runSyncPush(ctx context.Context, syncer *sync.Syncer, status *domain.SyncSt
 	if result.CommitHash != "" {
 		out.Printf("  commit: %s\n", ui.TruncateHash(result.CommitHash))
 	}
+	if result.Warning != "" {
+		out.Warn("%s", result.Warning)
+	}
 	return nil
 }
 

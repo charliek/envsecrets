@@ -110,6 +110,10 @@ type PushResult struct {
 	FilesAdded int `json:"files_added"`
 	// FilesDeleted is the number of files deleted
 	FilesDeleted int `json:"files_deleted"`
+	// Warning is a non-fatal advisory the caller should surface to the user.
+	// Currently used to flag when the post-push baseline marker write failed
+	// (push succeeded remotely but this machine kept a stale LAST_SYNCED).
+	Warning string `json:"warning,omitempty"`
 }
 
 // PullResult contains the result of a pull operation

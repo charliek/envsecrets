@@ -362,6 +362,85 @@ func TestPull_RefDoesNotUpdateLastSynced(t *testing.T) {
 		"pull --ref must not overwrite LAST_SYNCED with an arbitrary historical commit")
 }
 
+// TestSyncStatus_FirstPull_NoBaseline_TreeMatches: a fresh / post-Reset
+// machine whose working tree happens to match remote still has no
+// LAST_SYNCED marker. status MUST recommend FirstPull (not InSync), because
+// push will refuse without a baseline. This is the case CodeRabbit flagged.
+func TestSyncStatus_FirstPull_NoBaseline_TreeMatches(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+
+	// B starts fresh (never pulled / pushed). Simulate a working tree that
+	// happens to match remote anyway — e.g. someone manually copied the
+	// secret in, or the marker got cleared while the file content didn't.
+	b.writeFile(".env", "X=1")
+
+	s := b.status()
+	require.Equal(t, domain.SyncActionFirstPull, s.Action,
+		"missing LAST_SYNCED must recommend FirstPull even when heads/content already match")
+	require.Empty(t, s.LastSynced)
+}
+
+// TestSyncStatus_FirstPull_NoBaseline_TreeDiffers: same case but with a
+// working-tree mismatch — also FirstPull.
+func TestSyncStatus_FirstPull_NoBaseline_TreeDiffers(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+
+	b.writeFile(".env", "X=different")
+
+	s := b.status()
+	require.Equal(t, domain.SyncActionFirstPull, s.Action)
+}
+
+// TestPush_WarnsOnLastSyncedWriteFailure: when WriteLastSynced fails after a
+// successful remote push, the result must surface a warning so callers know
+// the next push could spuriously hit ErrDivergedHistory. We simulate the
+// failure by making the cache's .git directory read-only mid-push.
+//
+// On macOS, root mode bits on a directory don't always block writes for the
+// owner, so we skip the test if we can't actually trigger the failure.
+func TestPush_WarnsOnLastSyncedWriteFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — chmod-based denial doesn't apply")
+	}
+
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	a.writeFile(".env", "X=1")
+
+	// First push to ensure the cache .git dir exists.
+	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "init"})
+	require.NoError(t, err)
+
+	// Make the .git dir read-only so the LAST_SYNCED tmp+rename can't write.
+	gitDir := filepath.Join(a.cache.Path(), ".git")
+	require.NoError(t, os.Chmod(gitDir, 0500))
+	t.Cleanup(func() { _ = os.Chmod(gitDir, 0700) })
+
+	// Confirm we actually broke writes; if the OS still lets us write, skip.
+	probe := filepath.Join(gitDir, ".write-probe")
+	if err := os.WriteFile(probe, []byte("x"), 0600); err == nil {
+		_ = os.Remove(probe)
+		t.Skip("filesystem ignores chmod 500 on directories — cannot simulate write failure")
+	}
+
+	a.writeFile(".env", "X=2")
+	res, err := a.syncer.Push(context.Background(), PushOptions{Message: "with-failure"})
+	require.NoError(t, err, "push must still succeed remotely even if marker write fails")
+	require.NotEmpty(t, res.Warning, "marker write failure must produce a Warning")
+	require.Contains(t, res.Warning, "envsecrets pull",
+		"warning should tell the user how to repair")
+}
+
 // TestSameContent verifies the small helper that both classification and
 // overlap detection lean on.
 func TestSameContent(t *testing.T) {
