@@ -170,16 +170,22 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			result.FilesKeptLocal++
 
 		case localChanged && remoteChanged:
-			// Both sides changed. Conflict only when the resulting states
-			// disagree — both deleting is a no-op convergence, and both
-			// editing to identical content is also fine.
 			// Both edited to identical content, OR both deleted — convergent
 			// changes that aren't conflicts. Treat as already in sync.
 			if sameContent(existingContent, fileExists, decrypted, remoteExists) {
 				result.FilesSkipped++
 				continue
 			}
-			result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			// Real conflict only when the working tree has state that
+			// could be lost or revived. A remote add against a working
+			// tree that simply never had the file is NOT a conflict — the
+			// user has nothing to overwrite. (Locally absent + remote
+			// absent is already filtered above; locally absent + baseline
+			// existed means the user deleted, which IS a conflict because
+			// the remote edit would resurrect the file.)
+			if fileExists || baseExists {
+				result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			}
 			if remoteExists {
 				filesToWrite = append(filesToWrite, fileToWrite{file: file, decrypted: decrypted, isNew: !fileExists})
 			} else if fileExists {
@@ -190,10 +196,12 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			}
 
 		default:
-			// Pessimistic fallback (no baseline): any disagreement is a
-			// potential conflict. Matches the historical behavior for
-			// fresh / post-Reset machines.
-			result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			// Pessimistic fallback (no baseline): any working-tree
+			// disagreement is a potential conflict, but a missing local
+			// file is never a conflict — there's nothing to overwrite.
+			if fileExists {
+				result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			}
 			if remoteExists {
 				filesToWrite = append(filesToWrite, fileToWrite{file: file, decrypted: decrypted, isNew: !fileExists})
 			} else if fileExists {

@@ -552,6 +552,30 @@ func TestPull_StaleTreeIsNotConflict(t *testing.T) {
 	require.Equal(t, 1, res.FilesUpdated)
 }
 
+// TestPull_FreshMachineCreatesFiles: a brand-new machine with no
+// LAST_SYNCED and no working-tree files must be able to pull cleanly.
+// The deletion-handling refactor briefly broke this by flagging
+// "remote has X, local doesn't" as a conflict — but a missing local
+// file with no baseline is just "fresh clone, give me the files".
+func TestPull_FreshMachineCreatesFiles(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+	// Bob has no LAST_SYNCED, no working-tree .env. Pull should create it.
+
+	res, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.NoError(t, err, "first-pull on a fresh machine must not be a conflict")
+	require.Empty(t, res.FilesWithConflicts)
+	require.Equal(t, 1, res.FilesCreated)
+
+	envOnDisk, err := os.ReadFile(filepath.Join(b.projectDir, ".env"))
+	require.NoError(t, err)
+	require.Equal(t, "X=1", string(envOnDisk))
+}
+
 // TestPull_AppliesRemoteDeletion: when another machine deleted a tracked
 // file, this machine's pull MUST remove it locally — otherwise the next
 // push would resurrect the file from this machine's stale working tree.
