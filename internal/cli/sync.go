@@ -117,7 +117,15 @@ func runSync(cmd *cobra.Command, args []string) error {
 }
 
 func runSyncPull(ctx context.Context, syncer *sync.Syncer, status *domain.SyncStatus, out *ui.Output) error {
-	out.Printf("Pulling %d remote change(s)...\n", len(status.RemoteChanges))
+	if status.Action == domain.SyncActionFirstPull {
+		// FirstPull returns from GetSyncStatus before per-file
+		// classification runs, so RemoteChanges is empty even though
+		// pull may write/update many files. Avoid misleading "0 remote
+		// change(s)" messaging in that case.
+		out.Println("Pulling remote state (first sync on this machine)...")
+	} else {
+		out.Printf("Pulling %d remote change(s)...\n", len(status.RemoteChanges))
+	}
 	opts := sync.PullOptions{}
 	// Wire interactive conflict resolution exactly like 'pull' does, so the
 	// user keeps the same UX they're used to if conflicts surface mid-pull.

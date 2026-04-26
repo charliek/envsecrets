@@ -173,14 +173,10 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			// Both sides changed. Conflict only when the resulting states
 			// disagree — both deleting is a no-op convergence, and both
 			// editing to identical content is also fine.
-			bothEqualNow := sameContent(existingContent, fileExists, decrypted, remoteExists)
-			if bothEqualNow {
-				if remoteExists {
-					result.FilesSkipped++
-				} else {
-					// both-deleted: nothing to do
-					result.FilesSkipped++
-				}
+			// Both edited to identical content, OR both deleted — convergent
+			// changes that aren't conflicts. Treat as already in sync.
+			if sameContent(existingContent, fileExists, decrypted, remoteExists) {
+				result.FilesSkipped++
 				continue
 			}
 			result.FilesWithConflicts = append(result.FilesWithConflicts, file)
