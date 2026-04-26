@@ -37,13 +37,13 @@ go test -v ./internal/cache -run TestCacheName
 - **internal/cache/**: Local git-based cache for encrypted files (`~/.envsecrets/cache/owner/repo/`); also owns the per-machine `LAST_SYNCED` marker at `.git/.envsecrets-last-synced`
 - **internal/sync/**: Push/pull/sync orchestration; `GetSyncStatus` does the 3-way classification (working tree vs `LAST_SYNCED` baseline vs remote HEAD) that drives `status` and `sync` recommendations and the push divergence safety check
 - **internal/project/**: Project discovery (finds git root, parses `.envsecrets` file)
-- **internal/git/**: Git operations via go-git library; commit author is stamped as `$USER@$hostname` (overridable via `ENVSECRETS_MACHINE_ID`)
+- **internal/git/**: Git operations via go-git library; commit author is stamped as `$USER@<machine_id>`, where `<machine_id>` defaults to the system `$hostname` and can be overridden via the `ENVSECRETS_MACHINE_ID` environment variable (or the `machine_id` config field, which the CLI exports into the env var on startup)
 - **internal/domain/**: Domain types (`RepoInfo`, `Commit` with `AuthorEmail`/`AuthorDisplay`, `FileStatus`, `SyncStatus` with `Action` enum) and error handling
 - **internal/ui/**: User output and prompts
 
 ### Key Data Flow
 
-**Push**: Read `LAST_SYNCED` baseline → Sync remote into local cache → Divergence safety check (refuses with `ErrDivergedHistory` if remote moved AND files overlap, unless `--force`) → Encrypt local .env files → Commit (author = `$USER@<machine_id>`) → Upload to GCS → Update `LAST_SYNCED` (or surface a `Warning` if marker write fails)
+**Push**: Read `LAST_SYNCED` baseline → Sync remote into local cache → Divergence safety check (refuses with `ErrDivergedHistory` if remote moved AND files overlap, unless `--force`) → Encrypt local .env files → Commit (author = `$USER@<machine_id>`, where `<machine_id>` defaults to `$hostname` unless overridden) → Upload to GCS → Update `LAST_SYNCED` (or surface a `Warning` if marker write fails)
 
 **Pull**: Download from GCS → Checkout commit → 3-way diff per file (overwrite stale tree, preserve local-only edits, conflict only when both sides changed the same file) → Decrypt → Write to project directory → Update `LAST_SYNCED` (only on full-HEAD pull, NOT for `pull --ref <hash>`)
 

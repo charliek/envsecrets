@@ -441,6 +441,45 @@ func TestPush_WarnsOnLastSyncedWriteFailure(t *testing.T) {
 		"warning should tell the user how to repair")
 }
 
+// TestSyncStatus_CorruptBaselineRecommendsFirstPull: when LAST_SYNCED points
+// at a commit the cache no longer has, GetSyncStatus must NOT blow up — it
+// should treat the baseline as missing and recommend FirstPull, exactly the
+// same way it handles an empty marker. Without this the user gets a hard
+// error from `status` they can't act on.
+func TestSyncStatus_CorruptBaselineRecommendsFirstPull(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	a.writeFile(".env", "X=1")
+	a.push()
+
+	// Point LAST_SYNCED at a hash that does not exist in this cache.
+	bogus := "deadbeef" + strings.Repeat("0", 32)
+	require.NoError(t, a.cache.WriteLastSynced(bogus))
+
+	s := a.status()
+	require.Equal(t, domain.SyncActionFirstPull, s.Action,
+		"corrupt baseline (LAST_SYNCED → unknown commit) must surface as FirstPull, not a hard error")
+}
+
+// TestPush_CorruptBaselineRefuses: same scenario, push side. The push must
+// refuse with an actionable message pointing at pull.
+func TestPush_CorruptBaselineRefuses(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	a.writeFile(".env", "X=1")
+	a.push()
+
+	// Edit locally and corrupt the marker.
+	a.writeFile(".env", "X=2")
+	bogus := "deadbeef" + strings.Repeat("0", 32)
+	require.NoError(t, a.cache.WriteLastSynced(bogus))
+
+	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "should refuse"})
+	require.Error(t, err)
+	require.True(t, errors.Is(err, domain.ErrDivergedHistory),
+		"corrupt baseline must surface as ErrDivergedHistory so the user knows to pull first")
+}
+
 // TestPull_StaleTreeIsNotConflict: when this machine's working tree matches
 // the LAST_SYNCED baseline (i.e. no local edits) but remote has moved, pull
 // should overwrite without prompting. Without LAST_SYNCED awareness the user

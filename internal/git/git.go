@@ -180,8 +180,13 @@ func commitAuthorIdentity() (string, string) {
 	}
 
 	if machineID := os.Getenv("ENVSECRETS_MACHINE_ID"); machineID != "" {
+		// Keep the email's host part as the machine identifier in both
+		// branches so cross-machine attribution stays consistent. When the
+		// OS user is unknown, fall back to the project name as the
+		// local-part rather than using machineID twice (which would read
+		// like a person, not a machine).
 		if user == "" {
-			return machineID, machineID + "@envsecrets"
+			return "envsecrets", "envsecrets@" + machineID
 		}
 		return user, user + "@" + machineID
 	}

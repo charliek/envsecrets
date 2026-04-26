@@ -152,8 +152,18 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 		return status, nil
 	}
 
-	// Three-way classification: each tracked file vs (base=LastSynced, remote=HEAD, local=working tree)
+	// Three-way classification: each tracked file vs (base=LastSynced, remote=HEAD, local=working tree).
+	// ErrRefNotFound here means LAST_SYNCED points at a commit the cache
+	// no longer has (corrupt baseline). Treat that exactly like a missing
+	// marker — the recommendation is FirstPull, not a hard failure.
 	if err := s.classifyFiles(files, lastSynced, status); err != nil {
+		if errors.Is(err, domain.ErrRefNotFound) {
+			status.Action = domain.SyncActionFirstPull
+			status.LocalChanges = nil
+			status.RemoteChanges = nil
+			status.Conflicts = nil
+			return status, nil
+		}
 		return nil, err
 	}
 
@@ -207,11 +217,22 @@ func (s *Syncer) classifyFiles(files []string, baseRef string, status *domain.Sy
 }
 
 // readCacheAtRef returns the decrypted file content at a specific ref, plus
-// whether the file existed at that ref. Missing file is not an error.
+// whether the file existed at that ref.
+//
+// A missing FILE at the ref is not an error (returns nil, false, nil) — that's
+// the normal "this file was added on the other side" case in a 3-way diff.
+//
+// A missing REF, however, IS propagated as an error. ErrRefNotFound here
+// almost always means LAST_SYNCED points at a commit the cache no longer
+// has (e.g. cache was partially restored, packfile is incomplete, or the
+// commit was GC'd). Treating that as "file absent at baseline" silently
+// would misclassify every tracked file as remote-only-changed, turning
+// every legitimate edit into a fake conflict. Surfacing the error lets
+// callers (status, sync) recover by recommending FirstPull.
 func (s *Syncer) readCacheAtRef(file, ref string) ([]byte, bool, error) {
 	encrypted, err := s.cache.ReadEncryptedAtRef(file, ref)
 	if err != nil {
-		if errors.Is(err, domain.ErrFileNotFound) || errors.Is(err, domain.ErrRefNotFound) {
+		if errors.Is(err, domain.ErrFileNotFound) {
 			return nil, false, nil
 		}
 		return nil, false, err

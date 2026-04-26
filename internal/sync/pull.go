@@ -3,6 +3,7 @@ package sync
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/charliek/envsecrets/internal/domain"
@@ -80,10 +81,17 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 
 	for _, file := range files {
 		// Read encrypted content at remote HEAD (cache is synced above).
+		// Distinguish "file not present at HEAD" (a normal case — the user
+		// added a tracked file that no machine has pushed yet) from any
+		// other read failure (corrupt cache, IO error, permission). The
+		// latter must surface as a hard error so the user knows pull is
+		// not silently leaving stale content in place.
 		encrypted, err := s.cache.ReadEncrypted(file)
 		if err != nil {
-			// File doesn't exist in cache (= not in remote at HEAD)
-			continue
+			if errors.Is(err, domain.ErrFileNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("failed to read %s from cache: %w", file, err)
 		}
 
 		decrypted, err := s.encrypter.Decrypt(encrypted)

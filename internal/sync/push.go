@@ -234,6 +234,14 @@ func (s *Syncer) checkPushDivergence(ctx context.Context, lastSynced string, opt
 
 	overlap, err := s.computePushOverlap(files, lastSynced)
 	if err != nil {
+		// LAST_SYNCED points at a commit the cache no longer has — corrupt
+		// baseline. Refuse with an actionable message: a successful pull
+		// will rewrite the marker to a valid head and unblock the push.
+		if errors.Is(err, domain.ErrRefNotFound) {
+			return domain.Errorf(domain.ErrDivergedHistory,
+				"this machine's sync baseline (last %s) no longer exists in the cache; run 'envsecrets pull' to restore the baseline, or use --force to overwrite remote with your working tree",
+				truncHash(lastSynced))
+		}
 		return err
 	}
 	if len(overlap) == 0 {
