@@ -111,9 +111,11 @@ func runSync(cmd *cobra.Command, args []string) error {
 			out.Println("  Resolve with: envsecrets diff <file>, then envsecrets pull again, then envsecrets push")
 			return domain.NewExitCodeError(domain.ErrActionRequired, exitCodeForActionRequired())
 		default:
-			// Pull, PullThenPush, FirstPull, FirstPushInit, NothingTracked —
-			// shouldn't happen right after a successful pull, but if they
-			// do, fall back to dispatching through the main loop.
+			// Pull, PullThenPush, FirstPull, FirstPushInit, NothingTracked
+			// shouldn't happen right after a successful pull. Refuse with
+			// a clear error rather than taking an implicit action — the
+			// user can re-run 'envsecrets sync' to dispatch from scratch
+			// once they've verified the unexpected state.
 			return fmt.Errorf("unexpected post-pull action: %q (re-run 'envsecrets sync' or 'envsecrets status' to inspect)", updated.Action)
 		}
 
