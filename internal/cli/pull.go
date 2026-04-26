@@ -108,6 +108,12 @@ func runPull(cmd *cobra.Command, args []string) error {
 	if result.FilesUpdated > 0 {
 		out.Printf("  %d file(s) updated\n", result.FilesUpdated)
 	}
+	if result.FilesDeleted > 0 {
+		out.Printf("  %d file(s) deleted (remote dropped them)\n", result.FilesDeleted)
+	}
+	if result.FilesKeptLocal > 0 {
+		out.Printf("  %d file(s) kept (local edits preserved; push to publish)\n", result.FilesKeptLocal)
+	}
 	if result.FilesSkipped > 0 {
 		out.Printf("  %d file(s) unchanged\n", result.FilesSkipped)
 	}

@@ -552,6 +552,90 @@ func TestPull_StaleTreeIsNotConflict(t *testing.T) {
 	require.Equal(t, 1, res.FilesUpdated)
 }
 
+// TestPull_AppliesRemoteDeletion: when another machine deleted a tracked
+// file, this machine's pull MUST remove it locally — otherwise the next
+// push would resurrect the file from this machine's stale working tree.
+func TestPull_AppliesRemoteDeletion(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	b := env.newMachine(t, []string{".env", ".env.local"})
+
+	a.writeFile(".env", "X=1")
+	a.writeFile(".env.local", "L=1")
+	a.push()
+	b.pull()
+
+	// A removes .env.local from disk and pushes. push handles
+	// "missing locally + present in cache" by deleting from cache.
+	require.NoError(t, os.Remove(filepath.Join(a.projectDir, ".env.local")))
+	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "drop .env.local"})
+	require.NoError(t, err)
+
+	// B pulls. .env.local should be removed from B's working tree.
+	res, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.FilesDeleted, "remote-deleted file must be removed locally")
+	require.NoFileExists(t, filepath.Join(b.projectDir, ".env.local"),
+		"working tree must reflect remote deletion")
+
+	// And critically, B's next push must NOT resurrect the file.
+	pushRes, err := b.syncer.Push(context.Background(), PushOptions{Message: "post-pull push"})
+	if err == nil {
+		require.Equal(t, 0, pushRes.FilesAdded, "push must not resurrect a file pull just removed")
+	} else {
+		require.ErrorIs(t, err, domain.ErrNothingToCommit,
+			"with no other changes, post-deletion push should be a no-op")
+	}
+}
+
+// TestPull_LocalDeleteRemoteEditIsConflict: if user deleted a file locally
+// but remote also edited it, that's a real conflict (the file would
+// reappear). Must surface to the resolver.
+func TestPull_LocalDeleteRemoteEditIsConflict(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+	b.pull()
+
+	// A edits remote; B deletes locally.
+	a.writeFile(".env", "X=2")
+	a.push()
+	b.deleteFile(".env")
+
+	_, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.Error(t, err)
+	require.ErrorIs(t, err, domain.ErrConflict,
+		"local-delete + remote-edit on the same file must surface as conflict")
+}
+
+// TestPull_BothDeletedConverges: both sides deleted the same file — that's
+// not a conflict, both arrived at the same end state.
+func TestPull_BothDeletedConverges(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	b := env.newMachine(t, []string{".env", ".env.local"})
+
+	a.writeFile(".env", "X=1")
+	a.writeFile(".env.local", "L=1")
+	a.push()
+	b.pull()
+
+	// A deletes .env.local and pushes.
+	require.NoError(t, os.Remove(filepath.Join(a.projectDir, ".env.local")))
+	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "a deletes"})
+	require.NoError(t, err)
+
+	// B (independently) also deletes .env.local locally before pulling.
+	b.deleteFile(".env.local")
+
+	res, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.NoError(t, err, "convergent deletion is not a conflict")
+	require.Empty(t, res.FilesWithConflicts)
+}
+
 // TestPull_PreservesLocalOnlyChanges: pull must NOT overwrite a file when
 // only the user changed it (remote didn't touch it). This is the disjoint
 // leg of pull_then_push — pull should skip the file so push can publish it.

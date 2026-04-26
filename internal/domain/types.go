@@ -159,8 +159,17 @@ type PullResult struct {
 	FilesUpdated int `json:"files_updated"`
 	// FilesCreated is the number of files created
 	FilesCreated int `json:"files_created"`
-	// FilesSkipped is the number of files skipped (e.g., up to date)
+	// FilesDeleted is the number of files removed locally because the
+	// remote dropped them (catch-up to a remote deletion).
+	FilesDeleted int `json:"files_deleted,omitempty"`
+	// FilesSkipped is the number of files left untouched because their
+	// content already matched remote.
 	FilesSkipped int `json:"files_skipped"`
+	// FilesKeptLocal is the number of files preserved despite remote
+	// content disagreeing — the user has a local-only edit (or local-only
+	// delete) that pull intentionally does not overwrite. These will be
+	// published by the next push.
+	FilesKeptLocal int `json:"files_kept_local,omitempty"`
 	// FilesSkippedConflict is the number of conflicting files that were skipped
 	FilesSkippedConflict int `json:"files_skipped_conflict,omitempty"`
 	// Ref is the commit ref that was pulled

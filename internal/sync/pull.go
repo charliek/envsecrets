@@ -71,46 +71,62 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 	// a difference is a local edit or just stale content.
 	lastSynced, _, _ := s.cache.ReadLastSynced()
 
-	// First pass: classify each tracked file.
+	// First pass: classify each tracked file using the same 3-way logic
+	// status uses, treating absence on either side as a real state. This
+	// covers the deletion cases (remote removed a file, user removed a
+	// file) which a content-only diff would silently mishandle.
 	type fileToWrite struct {
 		file      string
 		decrypted []byte
 		isNew     bool
 	}
 	var filesToWrite []fileToWrite
+	var filesToDelete []string
 
 	for _, file := range files {
-		// Read encrypted content at remote HEAD (cache is synced above).
-		// Distinguish "file not present at HEAD" (a normal case — the user
-		// added a tracked file that no machine has pushed yet) from any
-		// other read failure (corrupt cache, IO error, permission). The
-		// latter must surface as a hard error so the user knows pull is
-		// not silently leaving stale content in place.
+		// Remote state (cache@HEAD).
+		var (
+			decrypted    []byte
+			remoteExists bool
+		)
 		encrypted, err := s.cache.ReadEncrypted(file)
-		if err != nil {
-			if errors.Is(err, domain.ErrFileNotFound) {
-				continue
+		switch {
+		case err == nil:
+			plain, decErr := s.encrypter.Decrypt(encrypted)
+			if decErr != nil {
+				return nil, fmt.Errorf("failed to decrypt %s: %w", file, decErr)
 			}
+			decrypted = plain
+			remoteExists = true
+		case errors.Is(err, domain.ErrFileNotFound):
+			// Tracked file is absent at remote HEAD. Either the user added
+			// it locally and never pushed, or another machine deleted it.
+			// The 3-way diff below distinguishes the two.
+			remoteExists = false
+		default:
+			// IO / corruption — must surface, not silently skip.
 			return nil, fmt.Errorf("failed to read %s from cache: %w", file, err)
 		}
 
-		decrypted, err := s.encrypter.Decrypt(encrypted)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decrypt %s: %w", file, err)
-		}
-
+		// Working-tree state.
 		existingContent, readErr := s.discovery.ReadFile(file)
 		fileExists := readErr == nil
 
-		if fileExists && bytes.Equal(existingContent, decrypted) {
-			// Working tree already matches remote; nothing to do.
+		// Cheap fast-path: both already in identical state.
+		if remoteExists && fileExists && bytes.Equal(existingContent, decrypted) {
+			result.FilesSkipped++
+			continue
+		}
+		if !remoteExists && !fileExists {
 			result.FilesSkipped++
 			continue
 		}
 
-		// Compute relationship to baseline if we have one.
-		var baseExists bool
-		var basePlain []byte
+		// Baseline state (cache@LAST_SYNCED) if available.
+		var (
+			basePlain  []byte
+			baseExists bool
+		)
 		if lastSynced != "" {
 			if baseEnc, baseErr := s.cache.ReadEncryptedAtRef(file, lastSynced); baseErr == nil {
 				if plain, decErr := s.encrypter.Decrypt(baseEnc); decErr == nil {
@@ -118,58 +134,75 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 					baseExists = true
 				}
 			}
+			// baseErr non-nil here is acceptable: file was absent at the
+			// baseline, or decrypt failed (rare, transient). Falling
+			// through with baseExists=false produces the pessimistic
+			// fallback further down — strictly safer than silently
+			// "deciding" with corrupt baseline data.
 		}
 
-		localChanged := true
-		remoteChanged := true
-		if baseExists {
-			if fileExists {
-				localChanged = !bytes.Equal(existingContent, basePlain)
-			} else {
-				localChanged = true // user deleted a tracked file vs baseline
-			}
-			remoteChanged = !bytes.Equal(decrypted, basePlain)
+		var localChanged, remoteChanged bool
+		if baseExists || lastSynced != "" {
+			localChanged = !sameContent(existingContent, fileExists, basePlain, baseExists)
+			remoteChanged = !sameContent(decrypted, remoteExists, basePlain, baseExists)
+		} else {
+			// No baseline available at all — pessimistic fallback below.
+			localChanged = true
+			remoteChanged = true
 		}
 
 		switch {
 		case !localChanged && remoteChanged:
-			// User has not edited this file since LAST_SYNCED; remote moved.
-			// Overwrite without prompting — this is the natural catch-up case.
-			filesToWrite = append(filesToWrite, fileToWrite{
-				file:      file,
-				decrypted: decrypted,
-				isNew:     !fileExists,
-			})
+			// Catch-up: remote moved, user has no local edit. Apply remote.
+			if remoteExists {
+				filesToWrite = append(filesToWrite, fileToWrite{file: file, decrypted: decrypted, isNew: !fileExists})
+			} else if fileExists {
+				// Remote deleted; user's working tree still has the
+				// stale content. Delete locally so the next push doesn't
+				// resurrect the file.
+				filesToDelete = append(filesToDelete, file)
+			}
 
 		case localChanged && !remoteChanged:
-			// User edited this file locally; remote didn't touch it. Pull
-			// must NOT overwrite — push will publish the local edit. This
-			// is the disjoint-changes leg of pull_then_push.
-			result.FilesSkipped++
+			// User has a local-only edit (or local-only delete). Preserve
+			// — push will publish it. Counted distinctly so CLI output
+			// isn't misleading ("unchanged" would lie).
+			result.FilesKeptLocal++
 
 		case localChanged && remoteChanged:
-			// Both sides changed. Real conflict — surface to caller.
-			if fileExists {
-				result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			// Both sides changed. Conflict only when the resulting states
+			// disagree — both deleting is a no-op convergence, and both
+			// editing to identical content is also fine.
+			bothEqualNow := sameContent(existingContent, fileExists, decrypted, remoteExists)
+			if bothEqualNow {
+				if remoteExists {
+					result.FilesSkipped++
+				} else {
+					// both-deleted: nothing to do
+					result.FilesSkipped++
+				}
+				continue
 			}
-			filesToWrite = append(filesToWrite, fileToWrite{
-				file:      file,
-				decrypted: decrypted,
-				isNew:     !fileExists,
-			})
+			result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			if remoteExists {
+				filesToWrite = append(filesToWrite, fileToWrite{file: file, decrypted: decrypted, isNew: !fileExists})
+			} else if fileExists {
+				// Local edited, remote deleted → unresolved conflict.
+				// On forced/overwrite resolution, mirror the remote
+				// state by deleting locally.
+				filesToDelete = append(filesToDelete, file)
+			}
 
 		default:
-			// Pessimistic fallback when no baseline is available: treat
-			// any working-tree disagreement as a potential conflict, the
-			// historical behavior for fresh / post-Reset machines.
-			if fileExists {
-				result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			// Pessimistic fallback (no baseline): any disagreement is a
+			// potential conflict. Matches the historical behavior for
+			// fresh / post-Reset machines.
+			result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			if remoteExists {
+				filesToWrite = append(filesToWrite, fileToWrite{file: file, decrypted: decrypted, isNew: !fileExists})
+			} else if fileExists {
+				filesToDelete = append(filesToDelete, file)
 			}
-			filesToWrite = append(filesToWrite, fileToWrite{
-				file:      file,
-				decrypted: decrypted,
-				isNew:     !fileExists,
-			})
 		}
 	}
 
@@ -193,26 +226,38 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			case ConflictSkip:
 				resolvedSkips[file] = true
 			case ConflictOverwrite:
-				// Do nothing, file will be written
+				// Do nothing, file will be written / deleted
 			default:
 				return result, fmt.Errorf("invalid conflict action %d for %s", action, file)
 			}
 		}
 
-		// Filter filesToWrite to exclude skipped files
-		var filtered []fileToWrite
+		// Filter both write and delete lists to exclude skipped files
+		var filteredWrites []fileToWrite
 		for _, ftw := range filesToWrite {
 			if resolvedSkips[ftw.file] {
 				result.FilesSkippedConflict++
 				continue
 			}
-			filtered = append(filtered, ftw)
+			filteredWrites = append(filteredWrites, ftw)
 		}
-		filesToWrite = filtered
+		filesToWrite = filteredWrites
+
+		var filteredDeletes []string
+		for _, f := range filesToDelete {
+			if resolvedSkips[f] {
+				result.FilesSkippedConflict++
+				continue
+			}
+			filteredDeletes = append(filteredDeletes, f)
+		}
+		filesToDelete = filteredDeletes
+
 		result.FilesWithConflicts = nil
 	}
 
-	// In dry-run mode, just count what would be written without actually writing
+	// In dry-run mode, just count what would be written/deleted without
+	// actually touching the working tree.
 	if opts.DryRun {
 		for _, ftw := range filesToWrite {
 			if ftw.isNew {
@@ -221,10 +266,11 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 				result.FilesUpdated++
 			}
 		}
+		result.FilesDeleted += len(filesToDelete)
 		return result, nil
 	}
 
-	// Second pass: write files
+	// Second pass: apply writes.
 	for _, ftw := range filesToWrite {
 		if err := s.discovery.WriteFile(ftw.file, ftw.decrypted); err != nil {
 			return nil, fmt.Errorf("failed to write %s: %w", ftw.file, err)
@@ -235,6 +281,16 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 		} else {
 			result.FilesUpdated++
 		}
+	}
+
+	// Third pass: apply deletes (after writes so write+delete on the same
+	// file in different order is consistent — though by construction a
+	// single file is in at most one of the two slices).
+	for _, f := range filesToDelete {
+		if err := s.discovery.RemoveFile(f); err != nil {
+			return nil, fmt.Errorf("failed to remove %s: %w", f, err)
+		}
+		result.FilesDeleted++
 	}
 
 	// Clear conflicts from result if we successfully wrote them (with --force)
