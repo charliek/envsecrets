@@ -144,7 +144,7 @@ func (o *Output) Table(headers []string, rows [][]string) {
 func (o *Output) PrintCommit(c domain.Commit, verbose bool) {
 	fmt.Fprintf(o.out, "%s %s\n", c.ShortHash, firstLine(c.Message))
 	if verbose {
-		fmt.Fprintf(o.out, "    Author: %s\n", c.Author)
+		fmt.Fprintf(o.out, "    Author: %s\n", c.AuthorDisplay())
 		fmt.Fprintf(o.out, "    Date:   %s\n", c.Date.Format(time.RFC3339))
 		if len(c.Files) > 0 {
 			fmt.Fprintf(o.out, "    Files:\n")

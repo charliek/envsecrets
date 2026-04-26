@@ -24,13 +24,49 @@ envsecrets init
 
 ### status
 
-Show repository info and file status.
+Show repository info, file status, and a recommended next action.
 
 ```bash
 envsecrets status
 ```
 
-Displays repository name, bucket, remote sync status, storage format version, and the status of each tracked file. Files are shown as added, modified, deleted (missing locally), unchanged, or not synced (missing both locally and in cache).
+Displays repository name, bucket, remote HEAD with provenance (`pushed by user@machine, Xm ago`), this machine's last-synced commit, the status of each tracked file, and a **Sync status** block with one of these recommendations:
+
+| Recommendation | Meaning |
+|---|---|
+| **In sync. Nothing to do.** | Local working tree, last-synced baseline, and remote HEAD all agree. |
+| **Run `envsecrets push`** | You have local edits not yet on remote. |
+| **Run `envsecrets pull`** | Another machine pushed; you have no local edits. |
+| **Run `envsecrets pull` then `envsecrets push`** | Both sides changed, but on different files (no overlap). |
+| **Reconcile** | The same file changed on two machines. Use `envsecrets diff <file>`, then `envsecrets pull` (interactive), then `envsecrets push`. |
+| **Run `envsecrets push` to initialize the remote** | Remote is empty; first push initializes it. |
+| **Run `envsecrets pull` first** | This machine has no sync baseline yet (fresh clone, post-reset, or upgraded from an older client). |
+
+The recommendation is computed from a true 3-way comparison: working tree vs `LAST_SYNCED` baseline vs remote HEAD. Hash and content equality drive the decision; timestamps are used only for context.
+
+### sync
+
+Run the recommended push/pull/reconcile action automatically.
+
+```bash
+envsecrets sync [flags]
+```
+
+| Flag | Description |
+|------|-------------|
+| `-m, --message` | Commit message used when sync runs push |
+| `--dry-run` | Show what would be done without doing it |
+
+`sync` looks at the same `Sync status` block `status` produces and:
+
+- **In sync** → exits 0 with "Already in sync."
+- **Push** → runs `envsecrets push`.
+- **Pull** → runs `envsecrets pull`.
+- **Pull then push** → runs pull, then push.
+- **Reconcile** → prints reconciliation guidance and exits 16 (`ExitActionRequired`). Does NOT auto-resolve overlapping conflicts; resolve manually with `envsecrets pull` (interactive) then re-run `envsecrets sync` or `envsecrets push`.
+- **First push init** → prints "Remote not initialized; run `envsecrets push`" and exits 16. `sync` will not initialize a remote on its own.
+
+There is no `--force` on `sync`. To override the divergence safety check, run `envsecrets push --force` directly.
 
 ### push
 
@@ -44,8 +80,21 @@ envsecrets push [flags]
 |------|-------------|
 | `-m, --message` | Commit message |
 | `--dry-run` | Show what would be pushed without pushing |
-| `--force` | Force push even with conflicts |
+| `--force` | Override the divergence safety check |
 | `--allow-missing` | Allow push with missing tracked files (for non-interactive mode) |
+
+#### Divergence safety
+
+By default, push refuses with `ErrDivergedHistory` (exit code 4) when:
+
+- The remote has moved since this machine's last successful sync, **and**
+- At least one tracked file changed both locally and on remote.
+
+The error lists the conflicting files and points at the resolution path. Run `envsecrets pull` (interactive resolver) to reconcile, then push. Or pass `--force` to push your working tree as-is, dropping the overlapping remote changes for those files (the previous content remains in history).
+
+This check is distinct from optimistic locking, which catches a race during a single push window. Both layers are active.
+
+If the post-push baseline marker write fails (rare — disk full, permission), the push still succeeds remotely but a `Warning:` is printed. Run `envsecrets pull` before the next push to repair the marker.
 
 ### pull
 
@@ -57,17 +106,27 @@ envsecrets pull [flags]
 
 | Flag | Description |
 |------|-------------|
-| `--ref` | Pull specific version (commit hash) |
+| `--ref` | Pull a specific version (commit hash) |
 | `--force` | Overwrite local files without confirmation |
 | `--dry-run` | Show what would be pulled without pulling |
 | `--skip-conflicts` | Skip conflicting files instead of aborting |
 
-When conflicts exist (local files differ from remote), pull will prompt per-file:
+#### Conflict detection
+
+Pull uses a 3-way comparison (working tree vs `LAST_SYNCED` baseline vs remote) to decide per file:
+
+- **No local changes, remote moved** → overwrite without prompting (the natural catch-up case).
+- **Local-only changes, remote unchanged for this file** → preserve the local copy (push will publish it).
+- **Both sides changed the same file** → real conflict; prompt or use the `--force` / `--skip-conflicts` / per-file resolver.
+
+When this machine has no `LAST_SYNCED` baseline yet (fresh clone, post-`Reset`, or upgraded from an older client), pull falls back to the historical pessimistic behavior: any working-tree disagreement is treated as a potential conflict requiring `--force`. Run `envsecrets pull` once to establish the baseline; subsequent catch-up pulls work without `--force`.
+
+Interactive prompt choices:
 - `[o]verwrite` - Replace local file with remote version
 - `[s]kip` - Keep local file unchanged
 - `[a]bort` - Cancel the entire pull operation
 
-Use `--force` to overwrite all conflicts, or `--skip-conflicts` to skip all conflicts without prompting.
+`pull --ref <hash>` performs a historical checkout and intentionally does **not** update `LAST_SYNCED` — the baseline tracks "where this machine is relative to remote HEAD", not arbitrary historical positions.
 
 ### log
 
@@ -239,4 +298,5 @@ envsecrets completion fish
 | 13 | File or repository not found |
 | 14 | Permission denied |
 | 15 | Version incompatible (storage FORMAT missing or unsupported) |
+| 16 | User action required (e.g. `sync` reached a `reconcile` state) |
 | 99 | Unknown error |

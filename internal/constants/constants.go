@@ -74,6 +74,7 @@ const (
 	ExitFileNotFound        = 13
 	ExitPermissionDenied    = 14
 	ExitVersionIncompatible = 15
+	ExitActionRequired      = 16
 	ExitUnknownError        = 99
 )
 

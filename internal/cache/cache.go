@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
@@ -17,6 +18,15 @@ import (
 	"github.com/charliek/envsecrets/internal/pathutil"
 	"github.com/charliek/envsecrets/internal/storage"
 )
+
+// LastSyncedFileName is the per-machine marker recording the commit hash this
+// machine last successfully pushed or pulled to. Plain text, single line of
+// 40 hex chars. Lives INSIDE .git/ so go-git's force-checkout (used by pull's
+// historical-ref path) can't wipe it as an "untracked" file. SyncToStorage
+// only uploads packed git objects and refs — never the contents of .git/
+// itself — so this stays per-machine and never leaks to remote storage.
+// Reset removes baseDir entirely, which intentionally clears this marker.
+const LastSyncedFileName = ".envsecrets-last-synced"
 
 // Cache manages the local cache of encrypted environment files
 type Cache struct {
@@ -585,6 +595,55 @@ func (c *Cache) Validate() CacheHealth {
 	health.FileCount = len(files)
 
 	return health
+}
+
+// lastSyncedPath returns the absolute path to this cache's LAST_SYNCED file.
+// Stored inside .git/ so worktree operations (e.g. go-git's force-checkout
+// during pull --ref) leave it alone.
+func (c *Cache) lastSyncedPath() string {
+	return filepath.Join(c.baseDir, ".git", LastSyncedFileName)
+}
+
+// ReadLastSynced returns the commit hash this machine last successfully synced
+// to (push or full-HEAD pull). Returns empty string with no error if the
+// marker is missing, malformed, or otherwise unreadable — callers should treat
+// "no marker" as "never synced". Never hard-errors.
+func (c *Cache) ReadLastSynced() (string, time.Time, error) {
+	path := c.lastSyncedPath()
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", time.Time{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", time.Time{}, nil
+	}
+	hash := strings.TrimSpace(string(data))
+	if !isValidGitHash(hash) {
+		return "", time.Time{}, nil
+	}
+	return hash, info.ModTime(), nil
+}
+
+// WriteLastSynced records the commit hash this machine just synced to.
+// Atomic via tmp+rename so a crash mid-write can't half-corrupt the marker.
+func (c *Cache) WriteLastSynced(hash string) error {
+	if !isValidGitHash(hash) {
+		return domain.Errorf(domain.ErrGitError, "invalid hash for last-synced marker: %q", hash)
+	}
+	path := c.lastSyncedPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to ensure cache dir: %v", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(hash+"\n"), 0600); err != nil {
+		return domain.Errorf(domain.ErrGitError, "failed to write last-synced marker: %v", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return domain.Errorf(domain.ErrGitError, "failed to rename last-synced marker: %v", err)
+	}
+	return nil
 }
 
 // Reset removes the local cache and re-downloads from storage

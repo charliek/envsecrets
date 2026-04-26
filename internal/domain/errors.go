@@ -31,6 +31,8 @@ var (
 	ErrNothingToCommit  = errors.New("nothing to commit")
 	ErrNotInitialized   = errors.New("cache not initialized")
 	ErrRemoteChanged    = errors.New("remote has changed since last sync")
+	ErrDivergedHistory  = errors.New("local and remote have diverged with overlapping changes")
+	ErrActionRequired   = errors.New("user action required")
 	ErrFileSizeTooLarge = errors.New("file size exceeds limit")
 	ErrVersionTooNew    = errors.New("storage format version not supported")
 	ErrVersionUnknown   = errors.New("storage format not recognized")
@@ -80,8 +82,10 @@ func errorToExitCode(err error) int {
 		return constants.ExitNotInRepo
 	case errors.Is(err, ErrNoEnvFiles), errors.Is(err, ErrNoFilesTracked):
 		return constants.ExitNoEnvFiles
-	case errors.Is(err, ErrConflict), errors.Is(err, ErrRemoteChanged):
+	case errors.Is(err, ErrConflict), errors.Is(err, ErrRemoteChanged), errors.Is(err, ErrDivergedHistory):
 		return constants.ExitConflict
+	case errors.Is(err, ErrActionRequired):
+		return constants.ExitActionRequired
 	case errors.Is(err, ErrDecryptFailed), errors.Is(err, ErrNoPassphrase):
 		return constants.ExitDecryptFailed
 	case errors.Is(err, ErrUploadFailed), errors.Is(err, ErrEncryptFailed):

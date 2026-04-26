@@ -151,10 +151,11 @@ func (r *GoGitRepository) Commit(message string) (string, error) {
 		return "", domain.Errorf(domain.ErrGitError, "failed to get worktree: %v", err)
 	}
 
+	name, email := commitAuthorIdentity()
 	commit, err := wt.Commit(message, &git.CommitOptions{
 		Author: &object.Signature{
-			Name:  "envsecrets",
-			Email: "envsecrets@local",
+			Name:  name,
+			Email: email,
 			When:  time.Now(),
 		},
 	})
@@ -163,6 +164,42 @@ func (r *GoGitRepository) Commit(message string) (string, error) {
 	}
 
 	return commit.String(), nil
+}
+
+// commitAuthorIdentity returns the (name, email) pair stamped on commits.
+// Order of precedence:
+//  1. ENVSECRETS_MACHINE_ID (if set) — used as both the human label and the
+//     email's host part, e.g. machine_id="laptop-A" → "user <user@laptop-A>".
+//  2. $USER + os.Hostname() — e.g. "charliek <charliek@MacBookPro.local>".
+//  3. Fallback: "envsecrets <envsecrets@local>" (matches the historical value
+//     so older commits remain visually distinct, not impersonated).
+func commitAuthorIdentity() (string, string) {
+	user := os.Getenv("USER")
+	if user == "" {
+		user = os.Getenv("USERNAME") // Windows
+	}
+
+	if machineID := os.Getenv("ENVSECRETS_MACHINE_ID"); machineID != "" {
+		// Keep the email's host part as the machine identifier in both
+		// branches so cross-machine attribution stays consistent. When the
+		// OS user is unknown, fall back to the project name as the
+		// local-part rather than using machineID twice (which would read
+		// like a person, not a machine).
+		if user == "" {
+			return "envsecrets", "envsecrets@" + machineID
+		}
+		return user, user + "@" + machineID
+	}
+
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "local"
+	}
+
+	if user == "" {
+		return "envsecrets", "envsecrets@" + host
+	}
+	return user, user + "@" + host
 }
 
 // Log implements Repository.Log
@@ -186,11 +223,12 @@ func (r *GoGitRepository) Log(n int, includeFiles bool) ([]domain.Commit, error)
 
 		hash := c.Hash.String()
 		commit := domain.Commit{
-			Hash:      hash,
-			ShortHash: hash[:constants.ShortHashLength],
-			Message:   c.Message,
-			Author:    c.Author.Name,
-			Date:      c.Author.When,
+			Hash:        hash,
+			ShortHash:   hash[:constants.ShortHashLength],
+			Message:     c.Message,
+			Author:      c.Author.Name,
+			AuthorEmail: c.Author.Email,
+			Date:        c.Author.When,
 		}
 
 		if includeFiles {

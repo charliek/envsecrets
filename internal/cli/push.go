@@ -108,6 +108,17 @@ func runPush(cmd *cobra.Command, args []string) error {
 			out.Println("Nothing to push - all files are up to date")
 			return nil
 		}
+		// ErrDivergedHistory covers several distinct causes (overlap with a
+		// concurrent push, corrupt or missing LAST_SYNCED). The wrapped
+		// error's text describes the specific cause; print that verbatim,
+		// then add the neutral resolution hint.
+		if errors.Is(err, domain.ErrDivergedHistory) {
+			out.Warn("push refused: %v", err)
+			out.Println("  Resolve with: envsecrets pull   (auto-handles non-overlapping changes; prompts on real conflicts)")
+			out.Println("  Then: envsecrets push")
+			out.Println("  Or override: envsecrets push --force   (publishes your working tree as-is)")
+			return err
+		}
 		return err
 	}
 
@@ -135,6 +146,10 @@ func runPush(cmd *cobra.Command, args []string) error {
 	if !pushDryRun && result.CommitHash != "" {
 		out.Println()
 		out.Printf("Commit: %s\n", ui.TruncateHash(result.CommitHash))
+	}
+
+	if result.Warning != "" {
+		out.Warn("%s", result.Warning)
 	}
 
 	return nil

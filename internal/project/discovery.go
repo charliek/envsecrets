@@ -212,3 +212,21 @@ func (d *Discovery) WriteFile(relPath string, content []byte) error {
 	}
 	return nil
 }
+
+// RemoveFile deletes a tracked file from the project working tree. A
+// not-found result is not an error — the goal state is "file absent",
+// which is already true. Used by pull when remote has deleted a file the
+// user is still tracking.
+func (d *Discovery) RemoveFile(relPath string) error {
+	fullPath, err := d.secureJoinPath(relPath)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(fullPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return domain.Errorf(domain.ErrGitError, "failed to remove file: %v", err)
+	}
+	return nil
+}

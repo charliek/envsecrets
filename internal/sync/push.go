@@ -12,8 +12,20 @@ import (
 
 // Push encrypts and uploads environment files
 func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult, error) {
+	// Read this machine's last-synced commit BEFORE any state changes. Used
+	// below to detect divergence from another machine's push.
+	lastSynced, _, _ := s.cache.ReadLastSynced()
+
 	// Sync from storage first to get full history and latest state
 	if err := s.syncBeforePush(ctx, opts.DryRun); err != nil {
+		return nil, err
+	}
+
+	// Divergence safety check: if remote has moved since this machine's last
+	// successful sync AND any of the user's local changes overlap files that
+	// also moved on remote, refuse — the user almost certainly wants to pull
+	// and reconcile first. --force bypasses.
+	if err := s.checkPushDivergence(ctx, lastSynced, opts); err != nil {
 		return nil, err
 	}
 
@@ -157,7 +169,129 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		return nil, fmt.Errorf("failed to sync to storage: %w", err)
 	}
 
+	// Record this machine's new sync baseline. Push has already succeeded
+	// remotely, so we do not roll back on failure — but we MUST surface the
+	// failure to the caller. With a stale LAST_SYNCED, the next push's
+	// divergence check will compare against an old baseline and can refuse
+	// with ErrDivergedHistory even though no other machine touched remote.
+	// The user's repair path is `envsecrets pull` (which rewrites the marker)
+	// before the next push.
+	if err := s.cache.WriteLastSynced(hash); err != nil {
+		result.Warning = fmt.Sprintf(
+			"push succeeded but failed to update local sync baseline: %v; run 'envsecrets pull' before the next push to repair",
+			err,
+		)
+	}
+
 	return result, nil
+}
+
+// checkPushDivergence implements the multi-machine safety check described in
+// the design plan. Returns nil to allow the push to proceed, or an error
+// (typically ErrDivergedHistory) to abort it.
+//
+// Behavior:
+//   - --force always bypasses this check.
+//   - If no remote yet, no divergence is possible.
+//   - If lastSynced is empty AND remote has commits, refuse: this machine has
+//     no baseline, so we can't tell whether the working tree is stale.
+//   - If lastSynced == remote HEAD, no divergence — proceed normally.
+//   - Otherwise compute file overlap. Overlap = files where the working tree
+//     differs from the baseline (lastSynced) AND remote moved on the same
+//     file. Any overlap → ErrDivergedHistory. Empty overlap → fast-forward
+//     safe; proceed.
+func (s *Syncer) checkPushDivergence(ctx context.Context, lastSynced string, opts PushOptions) error {
+	if opts.Force {
+		return nil
+	}
+
+	remoteHead, err := s.cache.GetRemoteHead(ctx)
+	if err != nil || remoteHead == "" {
+		// No remote yet — initialization push, nothing to diverge from.
+		return nil
+	}
+
+	if lastSynced == remoteHead {
+		return nil
+	}
+
+	files, err := s.discoveryEnvFiles()
+	if err != nil {
+		// "No files tracked" is not a divergence concern.
+		if errors.Is(err, domain.ErrNoFilesTracked) {
+			return nil
+		}
+		return err
+	}
+
+	if lastSynced == "" {
+		// Remote has commits but this machine has no recorded baseline. We
+		// can't classify safely; refuse with a clear next step.
+		return domain.Errorf(domain.ErrDivergedHistory,
+			"this machine has no sync baseline (remote HEAD %s exists but no last-synced marker); run 'envsecrets pull' first, or use --force to overwrite remote with your working tree",
+			truncHash(remoteHead))
+	}
+
+	overlap, err := s.computePushOverlap(files, lastSynced)
+	if err != nil {
+		// LAST_SYNCED points at a commit the cache no longer has — corrupt
+		// baseline. Refuse with an actionable message: a successful pull
+		// will rewrite the marker to a valid head and unblock the push.
+		if errors.Is(err, domain.ErrRefNotFound) {
+			return domain.Errorf(domain.ErrDivergedHistory,
+				"this machine's sync baseline (last %s) no longer exists in the cache; run 'envsecrets pull' to restore the baseline, or use --force to overwrite remote with your working tree",
+				truncHash(lastSynced))
+		}
+		return err
+	}
+	if len(overlap) == 0 {
+		// Diverged but disjoint — the existing fast-forward in syncBeforePush
+		// already aligned the cache; let the push proceed.
+		return nil
+	}
+
+	return domain.Errorf(domain.ErrDivergedHistory,
+		"remote has moved since this machine last synced (last %s, remote %s) AND %d file(s) changed on both sides: %v; run 'envsecrets pull' to reconcile or 'envsecrets push --force' to overwrite remote",
+		truncHash(lastSynced), truncHash(remoteHead), len(overlap), overlap)
+}
+
+// computePushOverlap returns the list of tracked files that were modified
+// both locally (working tree vs lastSynced) AND remotely (cache@HEAD vs
+// lastSynced) — the intersection that makes push unsafe.
+func (s *Syncer) computePushOverlap(files []string, baseRef string) ([]string, error) {
+	var overlap []string
+	for _, f := range files {
+		baseBytes, baseExists, err := s.readCacheAtRef(f, baseRef)
+		if err != nil {
+			return nil, err
+		}
+		remoteBytes, remoteExists, err := s.readCacheAtHead(f)
+		if err != nil {
+			return nil, err
+		}
+		localBytes, localExists, err := s.readWorkingTree(f)
+		if err != nil {
+			return nil, err
+		}
+
+		localChanged := !sameContent(baseBytes, baseExists, localBytes, localExists)
+		remoteChanged := !sameContent(baseBytes, baseExists, remoteBytes, remoteExists)
+
+		// Overlap only counts when local and remote disagree. If they
+		// converged on the same content, there's nothing to reconcile.
+		if localChanged && remoteChanged && !sameContent(localBytes, localExists, remoteBytes, remoteExists) {
+			overlap = append(overlap, f)
+		}
+	}
+	return overlap, nil
+}
+
+// truncHash shortens a 40-char hash for human-readable error messages.
+func truncHash(h string) string {
+	if len(h) > constants.ShortHashLength {
+		return h[:constants.ShortHashLength]
+	}
+	return h
 }
 
 // syncBeforePush syncs from storage to get the latest history, then fast-forwards

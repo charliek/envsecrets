@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/charliek/envsecrets/internal/cache"
@@ -24,6 +25,14 @@ type ProjectContext struct {
 
 // NewProjectContext creates a new project context with all required components
 func NewProjectContext(ctx context.Context, cfg *config.Config) (*ProjectContext, error) {
+	// Plumb optional machine identity into the env var the git layer reads
+	// when stamping commit authors. Only override if the user explicitly set
+	// machine_id in config, so a pre-existing ENVSECRETS_MACHINE_ID env var
+	// (e.g. set by CI) still wins.
+	if cfg != nil && cfg.MachineID != "" && os.Getenv("ENVSECRETS_MACHINE_ID") == "" {
+		_ = os.Setenv("ENVSECRETS_MACHINE_ID", cfg.MachineID)
+	}
+
 	repoOverride := GetRepo()
 
 	var repoInfo *domain.RepoInfo

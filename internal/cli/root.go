@@ -114,6 +114,7 @@ func init() {
 	rootCmd.AddCommand(encodeCmd)
 	rootCmd.AddCommand(doctorCmd)
 	rootCmd.AddCommand(statusCmd)
+	rootCmd.AddCommand(syncCmd)
 	rootCmd.AddCommand(pushCmd)
 	rootCmd.AddCommand(pullCmd)
 	rootCmd.AddCommand(logCmd)
@@ -139,15 +140,6 @@ func GetOutput() *ui.Output {
 // GetRepo returns the repo override flag value (for use by subcommands)
 func GetRepo() string {
 	return repo
-}
-
-// ExitWithError prints an error and exits with the appropriate code
-func ExitWithError(err error) {
-	if output != nil {
-		output.Error("%v", err)
-	}
-	code := domain.GetExitCode(err)
-	os.Exit(code)
 }
 
 // signalContext returns a context that is cancelled on SIGINT, SIGTERM, or timeout

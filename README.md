@@ -11,6 +11,7 @@ CLI tool for managing encrypted environment files using GCS and age encryption.
 - **Version history**: Git-based versioning for all environment files
 - **Team sharing**: Share encrypted environment files across your team via GCS
 - **Simple workflow**: Push/pull workflow similar to git
+- **Multi-machine clarity**: `envsecrets status` tells you whether to push, pull, reconcile, or do nothing — and `envsecrets sync` runs the safe action automatically. Push refuses to silently overwrite changes another machine made.
 
 ## Installation
 
@@ -51,6 +52,13 @@ envsecrets push -m "Initial commit"
 
 ```bash
 envsecrets pull
+```
+
+5. From any machine, see what to do next:
+
+```bash
+envsecrets status   # shows: in sync / push / pull / reconcile
+envsecrets sync     # runs the recommended safe action automatically
 ```
 
 ## Documentation

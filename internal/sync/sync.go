@@ -1,7 +1,9 @@
 package sync
 
 import (
+	"bytes"
 	"context"
+	"errors"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/crypto"
@@ -75,34 +77,224 @@ type PullOptions struct {
 	ConflictResolver ConflictResolver
 }
 
-// GetSyncStatus returns the sync status between local and remote
+// GetSyncStatus computes a complete sync status: heads, last-synced marker,
+// per-file 3-way classification, and a recommended action. Performs a remote
+// fetch (SyncFromStorage) so the cache reflects current remote state.
 func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) {
 	status := &domain.SyncStatus{}
 
-	// Get local head
-	localHead, err := s.cache.Head()
+	// Read last-synced marker first (works even with no remote)
+	lastSynced, lastSyncedAt, _ := s.cache.ReadLastSynced()
+	status.LastSynced = lastSynced
+	status.LastSyncedAt = lastSyncedAt
+
+	// Check remote
+	remoteExists, err := s.cache.ExistsRemote(ctx)
 	if err != nil {
-		if err == domain.ErrNotInitialized {
-			localHead = ""
-		} else {
+		return nil, err
+	}
+
+	if remoteExists {
+		// Sync cache so cache@HEAD reflects remote
+		if err := s.cache.SyncFromStorage(ctx); err != nil {
 			return nil, err
 		}
+		rh, err := s.cache.GetRemoteHead(ctx)
+		if err == nil {
+			status.RemoteHead = rh
+		}
+		// Pull commit metadata for the remote HEAD (author + when). Use
+		// Commit.AuthorDisplay so cross-machine attribution is visible —
+		// git stores the per-machine label in Email's host part
+		// ("user@machine-id"), and a Name-only display would hide it
+		// whenever the OS user is the same on every machine.
+		if commits, err := s.cache.Log(1, false); err == nil && len(commits) > 0 {
+			status.RemoteAuthor = commits[0].AuthorDisplay()
+			status.RemoteAuthorEmail = commits[0].AuthorEmail
+			status.RemoteCommittedAt = commits[0].Date
+		}
 	}
-	status.LocalHead = localHead
 
-	// Get remote head
-	remoteHead, err := s.cache.GetRemoteHead(ctx)
-	if err != nil {
-		// Remote doesn't exist yet
-		status.RemoteHead = ""
-	} else {
-		status.RemoteHead = remoteHead
+	// Local head (after sync, this equals remote when remote exists)
+	if lh, err := s.cache.Head(); err == nil {
+		status.LocalHead = lh
+	}
+	status.InSync = status.LocalHead != "" && status.LocalHead == status.RemoteHead
+
+	// Determine baseline cases that don't need a 3-way diff
+	files, fileErr := s.discoveryEnvFiles()
+	switch {
+	case errors.Is(fileErr, domain.ErrNoFilesTracked):
+		status.Action = domain.SyncActionNothingTracked
+		return status, nil
+	case fileErr != nil:
+		return nil, fileErr
+	case len(files) == 0:
+		status.Action = domain.SyncActionNothingTracked
+		return status, nil
 	}
 
-	// Determine sync status
-	status.InSync = status.LocalHead == status.RemoteHead
+	if !remoteExists {
+		status.Action = domain.SyncActionFirstPushInit
+		return status, nil
+	}
+
+	if lastSynced == "" {
+		// Cache reflects remote, but this machine has no recorded baseline
+		// (fresh clone, post-Reset, upgraded from old client, or corrupted
+		// marker). Even when the working tree happens to match remote, the
+		// recommendation must be FirstPull — push refuses without a baseline
+		// (see checkPushDivergence in push.go), so claiming InSync would lie
+		// to the user about whether their next push will succeed. The
+		// informational LocalHead/RemoteHead fields above still tell them
+		// the heads agree.
+		status.Action = domain.SyncActionFirstPull
+		return status, nil
+	}
+
+	// Three-way classification: each tracked file vs (base=LastSynced, remote=HEAD, local=working tree).
+	// ErrRefNotFound here means LAST_SYNCED points at a commit the cache
+	// no longer has (corrupt baseline). Treat that exactly like a missing
+	// marker — the recommendation is FirstPull, not a hard failure.
+	if err := s.classifyFiles(files, lastSynced, status); err != nil {
+		if errors.Is(err, domain.ErrRefNotFound) {
+			status.Action = domain.SyncActionFirstPull
+			status.LocalChanges = nil
+			status.RemoteChanges = nil
+			status.Conflicts = nil
+			return status, nil
+		}
+		return nil, err
+	}
+
+	// Decide action from the three sets
+	switch {
+	case len(status.LocalChanges) == 0 && len(status.RemoteChanges) == 0:
+		status.Action = domain.SyncActionInSync
+	case len(status.Conflicts) > 0:
+		status.Action = domain.SyncActionReconcile
+	case len(status.LocalChanges) > 0 && len(status.RemoteChanges) > 0:
+		status.Action = domain.SyncActionPullThenPush
+	case len(status.LocalChanges) > 0:
+		status.Action = domain.SyncActionPush
+	case len(status.RemoteChanges) > 0:
+		status.Action = domain.SyncActionPull
+	}
 
 	return status, nil
+}
+
+// classifyFiles fills in LocalChanges/RemoteChanges/Conflicts on status.
+func (s *Syncer) classifyFiles(files []string, baseRef string, status *domain.SyncStatus) error {
+	for _, f := range files {
+		baseBytes, baseExists, err := s.readCacheAtRef(f, baseRef)
+		if err != nil {
+			return err
+		}
+		remoteBytes, remoteExists, err := s.readCacheAtHead(f)
+		if err != nil {
+			return err
+		}
+		localBytes, localExists, err := s.readWorkingTree(f)
+		if err != nil {
+			return err
+		}
+
+		localChanged := !sameContent(baseBytes, baseExists, localBytes, localExists)
+		remoteChanged := !sameContent(baseBytes, baseExists, remoteBytes, remoteExists)
+
+		if localChanged {
+			status.LocalChanges = append(status.LocalChanges, f)
+		}
+		if remoteChanged {
+			status.RemoteChanges = append(status.RemoteChanges, f)
+		}
+		if localChanged && remoteChanged && !sameContent(localBytes, localExists, remoteBytes, remoteExists) {
+			status.Conflicts = append(status.Conflicts, f)
+		}
+	}
+	return nil
+}
+
+// readCacheAtRef returns the decrypted file content at a specific ref, plus
+// whether the file existed at that ref.
+//
+// A missing FILE at the ref is not an error (returns nil, false, nil) — that's
+// the normal "this file was added on the other side" case in a 3-way diff.
+//
+// A missing REF, however, IS propagated as an error. ErrRefNotFound here
+// almost always means LAST_SYNCED points at a commit the cache no longer
+// has (e.g. cache was partially restored, packfile is incomplete, or the
+// commit was GC'd). Treating that as "file absent at baseline" silently
+// would misclassify every tracked file as remote-only-changed, turning
+// every legitimate edit into a fake conflict. Surfacing the error lets
+// callers (status, sync) recover by recommending FirstPull.
+func (s *Syncer) readCacheAtRef(file, ref string) ([]byte, bool, error) {
+	encrypted, err := s.cache.ReadEncryptedAtRef(file, ref)
+	if err != nil {
+		if errors.Is(err, domain.ErrFileNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	plain, err := s.encrypter.Decrypt(encrypted)
+	if err != nil {
+		return nil, false, err
+	}
+	return plain, true, nil
+}
+
+// readCacheAtHead returns the decrypted file content at HEAD (= remote after
+// SyncFromStorage), plus existence. Missing file is not an error.
+func (s *Syncer) readCacheAtHead(file string) ([]byte, bool, error) {
+	encrypted, err := s.cache.ReadEncrypted(file)
+	if err != nil {
+		if errors.Is(err, domain.ErrFileNotFound) || errors.Is(err, domain.ErrNotInitialized) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	plain, err := s.encrypter.Decrypt(encrypted)
+	if err != nil {
+		return nil, false, err
+	}
+	return plain, true, nil
+}
+
+// readWorkingTree returns the project-directory content of file, plus existence.
+func (s *Syncer) readWorkingTree(file string) ([]byte, bool, error) {
+	if s.discovery == nil {
+		return nil, false, nil
+	}
+	if !s.discovery.FileExists(file) {
+		return nil, false, nil
+	}
+	content, err := s.discovery.ReadFile(file)
+	if err != nil {
+		return nil, false, err
+	}
+	return content, true, nil
+}
+
+// sameContent reports whether two (bytes, exists) pairs represent the same
+// state — both absent, or both present and byte-equal.
+func sameContent(a []byte, aExists bool, b []byte, bExists bool) bool {
+	if aExists != bExists {
+		return false
+	}
+	if !aExists {
+		return true
+	}
+	return bytes.Equal(a, b)
+}
+
+// discoveryEnvFiles returns the tracked file list, propagating ErrNoFilesTracked
+// distinctly so callers can treat "nothing to track" as a soft state, not an error.
+func (s *Syncer) discoveryEnvFiles() ([]string, error) {
+	if s.discovery == nil {
+		return nil, domain.ErrNotInRepo
+	}
+	return s.discovery.EnvFiles()
 }
 
 // EnsureCacheInitialized ensures the cache is initialized

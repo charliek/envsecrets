@@ -3,6 +3,8 @@ package cache
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -514,4 +516,82 @@ func TestSyncFromStorage_FutureVersion(t *testing.T) {
 	err = c.SyncFromStorage(ctx)
 	require.Error(t, err)
 	require.True(t, errors.Is(err, domain.ErrVersionTooNew))
+}
+
+func TestCache_LastSynced_RoundTrip(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	hash := strings.Repeat("a", 40)
+	require.NoError(t, c.WriteLastSynced(hash))
+
+	got, mtime, err := c.ReadLastSynced()
+	require.NoError(t, err)
+	require.Equal(t, hash, got)
+	require.False(t, mtime.IsZero(), "mtime must be populated for present marker")
+}
+
+func TestCache_LastSynced_MissingIsEmpty(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// No marker written yet — must NOT error
+	got, mtime, err := c.ReadLastSynced()
+	require.NoError(t, err)
+	require.Empty(t, got)
+	require.True(t, mtime.IsZero())
+}
+
+func TestCache_LastSynced_CorruptIsEmpty(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	dir := t.TempDir()
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, dir)
+
+	// Write garbage directly bypassing the helper to simulate corruption.
+	gitDir := filepath.Join(dir, ".git")
+	require.NoError(t, os.MkdirAll(gitDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(gitDir, LastSyncedFileName), []byte("not-a-hash"), 0600))
+
+	got, _, err := c.ReadLastSynced()
+	require.NoError(t, err, "corrupt marker must not propagate as error")
+	require.Empty(t, got)
+}
+
+func TestCache_LastSynced_RejectsInvalidHash(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	require.Error(t, c.WriteLastSynced("nope"))
+	require.Error(t, c.WriteLastSynced(""))
+	require.Error(t, c.WriteLastSynced(strings.Repeat("z", 40))) // non-hex
+}
+
+func TestCache_Reset_ClearsLastSynced(t *testing.T) {
+	mockRepo := git.NewMockRepository()
+	mockRepo.Init()
+	mockStorage := storage.NewMockStorage()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "repo"}
+	c := NewCacheWithRepo(repoInfo, mockStorage, mockRepo, t.TempDir())
+
+	// Set a marker, then Reset (no remote → goes to fresh-init path)
+	require.NoError(t, c.WriteLastSynced(strings.Repeat("a", 40)))
+
+	ctx := context.Background()
+	require.NoError(t, c.Reset(ctx))
+
+	got, _, err := c.ReadLastSynced()
+	require.NoError(t, err)
+	require.Empty(t, got, "Reset must clear the LAST_SYNCED marker — it implies the cache is no longer trusted")
 }
