@@ -91,15 +91,31 @@ func runSync(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		// Re-fetch status after pull so the second leg works against the
-		// updated baseline. Pull may have written LAST_SYNCED.
+		// updated baseline. Pull may have written LAST_SYNCED, and a
+		// user-resolved conflict (skip) can leave us in an unexpected
+		// state — dispatch on the new action rather than blindly pushing.
 		updated, err := syncer.GetSyncStatus(ctx)
 		if err != nil {
 			return err
 		}
-		if updated.Action == domain.SyncActionInSync {
+		switch updated.Action {
+		case domain.SyncActionInSync:
 			return nil
+		case domain.SyncActionPush:
+			return runSyncPush(ctx, syncer, updated, out)
+		case domain.SyncActionReconcile:
+			out.Warn("reconcile required after pull: %d file(s) changed on both sides", len(updated.Conflicts))
+			for _, f := range updated.Conflicts {
+				out.Printf("  - %s\n", f)
+			}
+			out.Println("  Resolve with: envsecrets diff <file>, then envsecrets pull again, then envsecrets push")
+			return domain.NewExitCodeError(domain.ErrActionRequired, exitCodeForActionRequired())
+		default:
+			// Pull, PullThenPush, FirstPull, FirstPushInit, NothingTracked —
+			// shouldn't happen right after a successful pull, but if they
+			// do, fall back to dispatching through the main loop.
+			return fmt.Errorf("unexpected post-pull action: %q (re-run 'envsecrets sync' or 'envsecrets status' to inspect)", updated.Action)
 		}
-		return runSyncPush(ctx, syncer, updated, out)
 
 	case domain.SyncActionReconcile:
 		out.Warn("reconcile required: %d file(s) changed on both sides", len(status.Conflicts))
@@ -182,8 +198,10 @@ func runSyncPush(ctx context.Context, syncer *sync.Syncer, status *domain.SyncSt
 			return nil
 		}
 		if errors.Is(err, domain.ErrDivergedHistory) {
-			out.Warn("push refused: another machine pushed changes that overlap with yours.")
-			out.Println("  Resolve with: envsecrets pull   (interactive: keep-local or overwrite per file)")
+			// Diverged history has multiple causes; let the wrapped error
+			// describe the specific one rather than presuming overlap.
+			out.Warn("push refused: %v", err)
+			out.Println("  Resolve with: envsecrets pull   (auto-handles non-overlapping changes; prompts on real conflicts)")
 			out.Println("  Then re-run: envsecrets sync")
 			out.Println("  Or override: envsecrets push --force")
 		}
@@ -217,7 +235,13 @@ func describeSyncAction(out *ui.Output, s *domain.SyncStatus) {
 		out.Println("Would do nothing — no files tracked.")
 	case domain.SyncActionFirstPushInit:
 		out.Println("Would refuse — remote not initialized; run 'envsecrets push' to initialize.")
-	case domain.SyncActionFirstPull, domain.SyncActionPull:
+	case domain.SyncActionFirstPull:
+		// Status returns FirstPull before per-file classification runs, so
+		// RemoteChanges is empty even though the pull will materialize the
+		// entire remote state on first sync. Don't print "0 remote
+		// change(s)" — say what's actually about to happen.
+		out.Println("Would perform initial pull and materialize the entire remote state.")
+	case domain.SyncActionPull:
 		out.Printf("Would pull %d remote change(s).\n", len(s.RemoteChanges))
 	case domain.SyncActionPush:
 		out.Printf("Would push %d local change(s).\n", len(s.LocalChanges))
