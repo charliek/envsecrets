@@ -103,9 +103,14 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 		if err == nil {
 			status.RemoteHead = rh
 		}
-		// Pull commit metadata for the remote HEAD (author + when)
+		// Pull commit metadata for the remote HEAD (author + when). Use
+		// Commit.AuthorDisplay so cross-machine attribution is visible —
+		// git stores the per-machine label in Email's host part
+		// ("user@machine-id"), and a Name-only display would hide it
+		// whenever the OS user is the same on every machine.
 		if commits, err := s.cache.Log(1, false); err == nil && len(commits) > 0 {
-			status.RemoteAuthor = commits[0].Author
+			status.RemoteAuthor = commits[0].AuthorDisplay()
+			status.RemoteAuthorEmail = commits[0].AuthorEmail
 			status.RemoteCommittedAt = commits[0].Date
 		}
 	}

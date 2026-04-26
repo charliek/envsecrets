@@ -218,11 +218,12 @@ func (r *GoGitRepository) Log(n int, includeFiles bool) ([]domain.Commit, error)
 
 		hash := c.Hash.String()
 		commit := domain.Commit{
-			Hash:      hash,
-			ShortHash: hash[:constants.ShortHashLength],
-			Message:   c.Message,
-			Author:    c.Author.Name,
-			Date:      c.Author.When,
+			Hash:        hash,
+			ShortHash:   hash[:constants.ShortHashLength],
+			Message:     c.Message,
+			Author:      c.Author.Name,
+			AuthorEmail: c.Author.Email,
+			Date:        c.Author.When,
 		}
 
 		if includeFiles {

@@ -263,11 +263,19 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 						out.Printf("  Error reading remote HEAD: %v\n", remoteErr)
 						allOK = false
 					} else {
-						localHead, _ := cacheRepo.Head()
-						switch localHead {
-						case remoteHead:
+						localHead, headErr := cacheRepo.Head()
+						switch {
+						case headErr != nil:
+							// Don't silently report "local empty" if the
+							// real reason is a git error — surface it so
+							// doctor's job (telling you what's broken)
+							// actually works.
+							out.Println("ERROR")
+							out.Printf("  Error reading local HEAD: %v\n", headErr)
+							allOK = false
+						case localHead == remoteHead:
 							out.Printf("OK (in sync, HEAD %s)\n", ui.TruncateHash(remoteHead))
-						case "":
+						case localHead == "":
 							out.Println("OK (remote has data, local cache empty — run 'envsecrets pull')")
 						default:
 							out.Printf("OUT OF SYNC (local %s, remote %s)\n", ui.TruncateHash(localHead), ui.TruncateHash(remoteHead))

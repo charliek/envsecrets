@@ -74,15 +74,18 @@ cmd/envsecrets
 
 1. CLI parses flags and loads config
 2. Project discovery finds repo identity and env files
-3. Sync from GCS: download packfile + refs, restore full git history locally
-4. Fast-forward local branch to remote HEAD if behind
-5. For each file:
+3. Read this machine's `LAST_SYNCED` baseline (per-machine marker, never uploaded)
+4. Sync from GCS: download packfile + refs, restore full git history locally
+5. Fast-forward local branch to remote HEAD if behind
+6. **Divergence safety check** — if `LAST_SYNCED != remote HEAD` AND any tracked file changed both locally (vs `LAST_SYNCED`) AND remotely (between `LAST_SYNCED` and HEAD), refuse with `ErrDivergedHistory` unless `--force` is set
+7. For each file:
    - Read plaintext from project directory
    - Encrypt with age
    - Write encrypted file to cache
-6. Commit changes to cache git repo
-7. Conflict check: verify remote HEAD hasn't changed since step 3
-8. Sync to GCS: create packfile of all objects + refs, upload FORMAT version marker, upload HEAD last (HEAD is the existence marker)
+8. Commit changes to cache git repo (author = `$USER@<machine_id-or-hostname>`)
+9. Optimistic locking check: verify remote HEAD hasn't changed since step 4
+10. Sync to GCS: create packfile of all objects + refs, upload FORMAT version marker, upload HEAD last (HEAD is the existence marker)
+11. Update `LAST_SYNCED` to the new commit. Failure here surfaces a `Warning` on the result but does NOT roll back the successful remote push
 
 ### Pull
 
@@ -90,10 +93,22 @@ cmd/envsecrets
 2. Project discovery finds repo identity
 3. Sync from GCS: download packfile + refs, validate FORMAT version, restore full git history locally
 4. Checkout requested ref (or HEAD) to populate working tree
-5. For each file in cache:
-   - Read encrypted file
-   - Decrypt with age
-   - Write plaintext to project directory
+5. Read this machine's `LAST_SYNCED` baseline
+6. For each tracked file, classify against (working tree, baseline, remote HEAD):
+   - No local edits, remote moved → overwrite (catch-up case, no prompt)
+   - Local edits, remote unchanged for this file → preserve local (push will publish)
+   - Both sides changed → real conflict (resolver / `--force` / abort)
+   - No baseline available → fall back to old pessimistic behavior
+7. Decrypt and write the files chosen for overwrite
+8. Update `LAST_SYNCED` to the new HEAD (only on full-HEAD pull; `--ref` checkouts do NOT update the marker)
+
+### Status / Sync
+
+1. Read `LAST_SYNCED` baseline + sync from GCS (so cache reflects remote)
+2. Run the same 3-way classification as pull, producing per-file `LocalChanges` / `RemoteChanges` / `Conflicts` slices
+3. Map to a `SyncAction`: `in_sync` / `push` / `pull` / `pull_then_push` / `reconcile` / `first_push_init` / `first_pull` / `nothing_tracked`
+4. `status` renders the action plus provenance (remote HEAD's author/timestamp, this machine's last-synced commit + age) for the user
+5. `sync` executes the action automatically — push, pull, or pull-then-push — and refuses with exit 16 (`ExitActionRequired`) on `reconcile` or `first_push_init` (initialization is intentionally manual)
 
 ## Cache Structure
 
@@ -103,13 +118,21 @@ cmd/envsecrets
 └── cache/
     └── {owner}/
         └── {repo}/
-            ├── .git/          # Full git history (restored from packfile)
-            ├── .env.age       # Encrypted files (working tree, populated by checkout)
+            ├── .git/                              # Full git history (restored from packfile)
+            │   └── .envsecrets-last-synced        # Per-machine baseline marker; never uploaded
+            ├── .env.age                           # Encrypted files (working tree, populated by checkout)
             └── .env.local.age
 ```
 
 The cache is a git repository containing only encrypted files. Full git history
 is synced between machines via packfiles stored in GCS.
+
+The `LAST_SYNCED` marker lives **inside** `.git/` so go-git's force-checkout
+during `pull --ref` cannot wipe it as an "untracked" file. It contains a
+single 40-char hex commit hash recording the most recent `push` or full-HEAD
+`pull` this machine successfully completed. `cache.Reset()` (which removes
+the entire cache directory) intentionally clears it — Reset implies the
+cache is no longer trusted, so the baseline must also be discarded.
 
 ## GCS Storage Layout
 
@@ -134,11 +157,14 @@ Sentinel errors in `internal/domain/errors.go` map to exit codes:
 | ErrNotInRepo | 2 | Not in a git repository |
 | ErrNoEnvFiles | 3 | No .envsecrets file found |
 | ErrConflict | 4 | Local/remote conflict |
+| ErrDivergedHistory | 4 | Push refused: remote moved AND files overlap (use `pull` or `--force`) |
+| ErrRemoteChanged | 4 | Push optimistic locking: remote moved during the push window |
 | ErrDecryptFailed | 5 | Decryption failed |
 | ErrUploadFailed | 6 | GCS upload failed |
 | ErrDownloadFailed | 7 | GCS download failed |
 | ErrVersionTooNew | 15 | Storage format version not supported by this client |
 | ErrVersionUnknown | 15 | Storage format marker missing (legacy repository) |
+| ErrActionRequired | 16 | `sync` reached a state requiring user action (`reconcile` or `first_push_init`) |
 
 ## Configuration Loading
 

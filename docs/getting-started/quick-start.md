@@ -57,6 +57,30 @@ cd your-project
 envsecrets pull
 ```
 
+## 6. Day-to-Day on Multiple Machines
+
+When you've been working on more than one machine and aren't sure what state things are in, run:
+
+```bash
+envsecrets status
+```
+
+The output ends with a recommendation — one of:
+
+- **In sync** — nothing to do
+- **Run `envsecrets push`** — you have local edits to publish
+- **Run `envsecrets pull`** — another machine pushed; catch up
+- **Run `envsecrets pull` then `envsecrets push`** — both sides changed, but on different files
+- **Reconcile** — the same file changed on two machines; resolve with `envsecrets diff <file>`, then `envsecrets pull` (interactive), then `envsecrets push`
+
+To skip the manual step, run:
+
+```bash
+envsecrets sync
+```
+
+`sync` performs the recommended safe action automatically. It refuses (with an actionable message) when a manual reconcile is required.
+
 ## Next Steps
 
 - [Configuration](configuration.md) - Detailed configuration options

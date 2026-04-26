@@ -30,12 +30,44 @@ type Commit struct {
 	ShortHash string `json:"short_hash"`
 	// Message is the commit message
 	Message string `json:"message"`
-	// Author is the commit author
+	// Author is the commit author name (git Author.Name)
 	Author string `json:"author"`
+	// AuthorEmail is the commit author email (git Author.Email). For
+	// envsecrets-stamped commits this is "<user>@<machine-id-or-hostname>",
+	// so the host part identifies the machine that pushed the commit.
+	AuthorEmail string `json:"author_email,omitempty"`
 	// Date is the commit timestamp
 	Date time.Time `json:"date"`
 	// Files is the list of files changed in this commit
 	Files []string `json:"files,omitempty"`
+}
+
+// AuthorDisplay returns a human-facing attribution string that combines the
+// commit's Name with the host part of its email so cross-machine identity
+// is always visible. Falls back to just Name when no email is available
+// (older commits or non-envsecrets-stamped history).
+func (c Commit) AuthorDisplay() string {
+	if c.AuthorEmail == "" {
+		return c.Author
+	}
+	at := -1
+	for i := len(c.AuthorEmail) - 1; i >= 0; i-- {
+		if c.AuthorEmail[i] == '@' {
+			at = i
+			break
+		}
+	}
+	if at < 0 || at == len(c.AuthorEmail)-1 {
+		return c.Author
+	}
+	host := c.AuthorEmail[at+1:]
+	if c.Author == "" {
+		return host
+	}
+	if c.Author == host {
+		return c.Author
+	}
+	return c.Author + "@" + host
 }
 
 // FileStatus represents the status of a tracked file
@@ -94,8 +126,13 @@ type SyncStatus struct {
 	Conflicts []string `json:"conflicts,omitempty"`
 	// Action is the recommended next action for the user
 	Action SyncAction `json:"action"`
-	// RemoteAuthor is the author of the remote HEAD commit (empty if no remote)
+	// RemoteAuthor is the author of the remote HEAD commit, formatted as
+	// "name@host" when the email is available so cross-machine attribution
+	// is visible at a glance. Empty if no remote.
 	RemoteAuthor string `json:"remote_author,omitempty"`
+	// RemoteAuthorEmail is the raw author email, retained for JSON consumers
+	// that want to filter or match on it programmatically.
+	RemoteAuthorEmail string `json:"remote_author_email,omitempty"`
 	// RemoteCommittedAt is when the remote HEAD commit was authored
 	RemoteCommittedAt time.Time `json:"remote_committed_at,omitempty"`
 }

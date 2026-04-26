@@ -54,7 +54,23 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 		return nil, err
 	}
 
-	// First pass: detect conflicts (files that would be overwritten)
+	// Read this machine's last-synced baseline so per-file decisions can
+	// use the same 3-way classification status uses:
+	//
+	//   working tree vs cache@LAST_SYNCED vs cache@HEAD (= remote)
+	//
+	//   no local change, no remote change → skip (already synced)
+	//   no local change, remote changed   → overwrite working tree
+	//   local changed, no remote change   → preserve working tree (push will publish)
+	//   local changed, remote changed     → conflict (require resolver / --force)
+	//
+	// Without a baseline (lastSynced == "") we fall back to the older,
+	// pessimistic behavior: any working-tree disagreement is treated as
+	// a conflict. That's correct because we genuinely cannot tell whether
+	// a difference is a local edit or just stale content.
+	lastSynced, _, _ := s.cache.ReadLastSynced()
+
+	// First pass: classify each tracked file.
 	type fileToWrite struct {
 		file      string
 		decrypted []byte
@@ -63,39 +79,90 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 	var filesToWrite []fileToWrite
 
 	for _, file := range files {
-		// Read encrypted content from cache
+		// Read encrypted content at remote HEAD (cache is synced above).
 		encrypted, err := s.cache.ReadEncrypted(file)
 		if err != nil {
-			// File doesn't exist in cache
+			// File doesn't exist in cache (= not in remote at HEAD)
 			continue
 		}
 
-		// Decrypt
 		decrypted, err := s.encrypter.Decrypt(encrypted)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decrypt %s: %w", file, err)
 		}
 
-		// Check if file exists and is different
-		existingContent, err := s.discovery.ReadFile(file)
-		fileExists := err == nil
+		existingContent, readErr := s.discovery.ReadFile(file)
+		fileExists := readErr == nil
 
 		if fileExists && bytes.Equal(existingContent, decrypted) {
-			// File unchanged
+			// Working tree already matches remote; nothing to do.
 			result.FilesSkipped++
 			continue
 		}
 
-		// File would be modified - track it
-		if fileExists {
-			result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+		// Compute relationship to baseline if we have one.
+		var baseExists bool
+		var basePlain []byte
+		if lastSynced != "" {
+			if baseEnc, baseErr := s.cache.ReadEncryptedAtRef(file, lastSynced); baseErr == nil {
+				if plain, decErr := s.encrypter.Decrypt(baseEnc); decErr == nil {
+					basePlain = plain
+					baseExists = true
+				}
+			}
 		}
 
-		filesToWrite = append(filesToWrite, fileToWrite{
-			file:      file,
-			decrypted: decrypted,
-			isNew:     !fileExists,
-		})
+		localChanged := true
+		remoteChanged := true
+		if baseExists {
+			if fileExists {
+				localChanged = !bytes.Equal(existingContent, basePlain)
+			} else {
+				localChanged = true // user deleted a tracked file vs baseline
+			}
+			remoteChanged = !bytes.Equal(decrypted, basePlain)
+		}
+
+		switch {
+		case !localChanged && remoteChanged:
+			// User has not edited this file since LAST_SYNCED; remote moved.
+			// Overwrite without prompting — this is the natural catch-up case.
+			filesToWrite = append(filesToWrite, fileToWrite{
+				file:      file,
+				decrypted: decrypted,
+				isNew:     !fileExists,
+			})
+
+		case localChanged && !remoteChanged:
+			// User edited this file locally; remote didn't touch it. Pull
+			// must NOT overwrite — push will publish the local edit. This
+			// is the disjoint-changes leg of pull_then_push.
+			result.FilesSkipped++
+
+		case localChanged && remoteChanged:
+			// Both sides changed. Real conflict — surface to caller.
+			if fileExists {
+				result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			}
+			filesToWrite = append(filesToWrite, fileToWrite{
+				file:      file,
+				decrypted: decrypted,
+				isNew:     !fileExists,
+			})
+
+		default:
+			// Pessimistic fallback when no baseline is available: treat
+			// any working-tree disagreement as a potential conflict, the
+			// historical behavior for fresh / post-Reset machines.
+			if fileExists {
+				result.FilesWithConflicts = append(result.FilesWithConflicts, file)
+			}
+			filesToWrite = append(filesToWrite, fileToWrite{
+				file:      file,
+				decrypted: decrypted,
+				isNew:     !fileExists,
+			})
+		}
 	}
 
 	// Handle conflicts

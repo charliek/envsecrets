@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.5
+
+- **Multi-machine sync clarity**: `envsecrets status` now ends with an unambiguous "do this next" recommendation (in_sync / push / pull / pull_then_push / reconcile / first_push_init / first_pull). Computed from a 3-way diff of working tree vs new `LAST_SYNCED` baseline vs remote HEAD.
+- **New `envsecrets sync` command**: runs the recommended safe action automatically; refuses with exit code 16 on `reconcile` (does not auto-resolve overlapping conflicts).
+- **Push divergence safety**: `push` refuses with `ErrDivergedHistory` (exit 4) when the remote moved since this machine's last sync AND files overlap. `--force` bypasses, preserving today's "publish working tree as-is" semantics. Closes a latent silent-overwrite path where a stale working tree could revert another machine's changes.
+- **Pull is smarter about conflicts**: catch-up pulls (no local edits, just stale tree) no longer require `--force`. Local-only edits are preserved through `pull_then_push`. Real conflicts (same file, different content on both sides) still require resolution.
+- **Per-commit machine attribution**: commits are now authored as `$USER@$hostname` (overridable via the `machine_id` config field or `ENVSECRETS_MACHINE_ID` env var) instead of the hardcoded `envsecrets@local`. `status` and `log` show "pushed by user@machine" in human output.
+- **Typed exit codes now actually surface**: previously `main.go` collapsed all errors to exit 1, throwing away the typed exit code map. Fixed; CI scripts can now distinguish reconcile (16) from network failure (9) from auth issues, etc.
+- **JSON status output enriched**: `--json` includes the `Sync status` recommendation, the three file-level lists (`local_changes`, `remote_changes`, `conflicts`), `last_synced`, `last_synced_at`, `remote_author`, and `remote_committed_at`.
+
+Storage format unchanged — the `LAST_SYNCED` marker is local-only, never uploaded. Old clients on other machines keep working seamlessly; new clients gain the recommendations and safety on their own pushes.
+
 ## v0.0.4
 
 - Fix stale local cache in multi-machine scenarios by fetching latest remote state before push/pull operations

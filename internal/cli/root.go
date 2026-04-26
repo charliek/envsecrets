@@ -142,15 +142,6 @@ func GetRepo() string {
 	return repo
 }
 
-// ExitWithError prints an error and exits with the appropriate code
-func ExitWithError(err error) {
-	if output != nil {
-		output.Error("%v", err)
-	}
-	code := domain.GetExitCode(err)
-	os.Exit(code)
-}
-
 // signalContext returns a context that is cancelled on SIGINT, SIGTERM, or timeout
 func signalContext() (context.Context, context.CancelFunc) {
 	// Create context with timeout

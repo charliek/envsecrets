@@ -29,29 +29,32 @@ go test -v ./internal/cache -run TestCacheName
 
 ### Package Structure
 
-- **cmd/envsecrets/**: Entry point, wires up CLI
-- **internal/cli/**: Cobra-based commands (push, pull, status, etc.)
-- **internal/config/**: YAML config parsing (`~/.envsecrets/config.yaml`)
+- **cmd/envsecrets/**: Entry point, wires up CLI; surfaces typed exit codes via `domain.GetExitCode`
+- **internal/cli/**: Cobra-based commands (push, pull, status, sync, etc.)
+- **internal/config/**: YAML config parsing (`~/.envsecrets/config.yaml`); includes optional `machine_id`
 - **internal/crypto/**: Age + scrypt encryption (`AgeEncrypter` interface)
 - **internal/storage/**: Cloud storage abstraction with GCS implementation
-- **internal/cache/**: Local git-based cache for encrypted files (`~/.envsecrets/cache/owner/repo/`)
-- **internal/sync/**: Push/pull orchestration coordinating discovery, storage, and encryption
+- **internal/cache/**: Local git-based cache for encrypted files (`~/.envsecrets/cache/owner/repo/`); also owns the per-machine `LAST_SYNCED` marker at `.git/.envsecrets-last-synced`
+- **internal/sync/**: Push/pull/sync orchestration; `GetSyncStatus` does the 3-way classification (working tree vs `LAST_SYNCED` baseline vs remote HEAD) that drives `status` and `sync` recommendations and the push divergence safety check
 - **internal/project/**: Project discovery (finds git root, parses `.envsecrets` file)
-- **internal/git/**: Git operations via go-git library
-- **internal/domain/**: Domain types (`RepoInfo`, `Commit`, `FileStatus`, `SyncStatus`) and error handling
+- **internal/git/**: Git operations via go-git library; commit author is stamped as `$USER@$hostname` (overridable via `ENVSECRETS_MACHINE_ID`)
+- **internal/domain/**: Domain types (`RepoInfo`, `Commit` with `AuthorEmail`/`AuthorDisplay`, `FileStatus`, `SyncStatus` with `Action` enum) and error handling
 - **internal/ui/**: User output and prompts
 
 ### Key Data Flow
 
-**Push**: Local .env files → Encrypt with age → Write to local git cache → Commit → Upload to GCS
+**Push**: Read `LAST_SYNCED` baseline → Sync remote into local cache → Divergence safety check (refuses with `ErrDivergedHistory` if remote moved AND files overlap, unless `--force`) → Encrypt local .env files → Commit (author = `$USER@<machine_id>`) → Upload to GCS → Update `LAST_SYNCED` (or surface a `Warning` if marker write fails)
 
-**Pull**: Download from GCS → Checkout commit → Decrypt → Write to project directory
+**Pull**: Download from GCS → Checkout commit → 3-way diff per file (overwrite stale tree, preserve local-only edits, conflict only when both sides changed the same file) → Decrypt → Write to project directory → Update `LAST_SYNCED` (only on full-HEAD pull, NOT for `pull --ref <hash>`)
+
+**Status / Sync**: 3-way classify each tracked file → recommend one of `in_sync`/`push`/`pull`/`pull_then_push`/`reconcile`/`first_push_init`/`first_pull`; `sync` executes the recommendation, refusing with exit code 16 on reconcile
 
 ### Configuration
 
 - Config file: `~/.envsecrets/config.yaml`
 - Cache directory: `~/.envsecrets/cache/owner/repo/`
-- Project tracking file: `.envsecrets` (lists files to track, one per line)
+- Per-machine baseline marker: `~/.envsecrets/cache/owner/repo/.git/.envsecrets-last-synced` (never uploaded)
+- Project tracking file: `.envsecrets` (lists files to track, one per line; supports `repo: owner/name` directive)
 
 ### Design Patterns
 

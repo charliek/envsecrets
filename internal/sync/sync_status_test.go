@@ -441,6 +441,87 @@ func TestPush_WarnsOnLastSyncedWriteFailure(t *testing.T) {
 		"warning should tell the user how to repair")
 }
 
+// TestPull_StaleTreeIsNotConflict: when this machine's working tree matches
+// the LAST_SYNCED baseline (i.e. no local edits) but remote has moved, pull
+// should overwrite without prompting. Without LAST_SYNCED awareness the user
+// would be forced to use --force on every catch-up pull.
+func TestPull_StaleTreeIsNotConflict(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+	b.pull() // baseline = first commit, working tree = X=1
+
+	// A pushes a new value. B has NOT edited locally; tree still X=1.
+	a.writeFile(".env", "X=2")
+	a.push()
+
+	// B pulls without Force, no resolver — old behavior would fail with
+	// ErrConflict because the tree disagrees with remote. New behavior
+	// notices the tree matches the baseline and accepts the overwrite.
+	res, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.NoError(t, err, "stale-but-unchanged tree must not be flagged as a conflict")
+	require.Empty(t, res.FilesWithConflicts)
+	require.Equal(t, 1, res.FilesUpdated)
+}
+
+// TestPull_PreservesLocalOnlyChanges: pull must NOT overwrite a file when
+// only the user changed it (remote didn't touch it). This is the disjoint
+// leg of pull_then_push — pull should skip the file so push can publish it.
+func TestPull_PreservesLocalOnlyChanges(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	b := env.newMachine(t, []string{".env", ".env.local"})
+
+	a.writeFile(".env", "X=1")
+	a.writeFile(".env.local", "L=1")
+	a.push()
+	b.pull()
+
+	// A changes only .env. B changes only .env.local.
+	a.writeFile(".env", "X=2")
+	a.push()
+	b.writeFile(".env.local", "L=b-edit")
+
+	res, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.NoError(t, err, "disjoint changes must not produce a pull conflict")
+	require.Empty(t, res.FilesWithConflicts)
+
+	// Working tree should now show: .env updated to remote, .env.local preserved.
+	envOnDisk, err := os.ReadFile(filepath.Join(b.projectDir, ".env"))
+	require.NoError(t, err)
+	require.Equal(t, "X=2", string(envOnDisk), "remote-only change should land in working tree")
+
+	localOnDisk, err := os.ReadFile(filepath.Join(b.projectDir, ".env.local"))
+	require.NoError(t, err)
+	require.Equal(t, "L=b-edit", string(localOnDisk), "local-only change must be preserved through pull")
+}
+
+// TestPull_LocallyEditedIsStillConflict: same scenario but B genuinely
+// edited the file. That MUST still be flagged as a conflict — the new
+// baseline-aware code only relaxes the no-edits case.
+func TestPull_LocallyEditedIsStillConflict(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+	b.pull()
+
+	a.writeFile(".env", "X=2")
+	a.push()
+
+	// B made a real local edit before pulling.
+	b.writeFile(".env", "X=b-local")
+
+	_, err := b.syncer.Pull(context.Background(), PullOptions{})
+	require.Error(t, err, "real local edit overlapping with remote change must surface as conflict")
+	require.ErrorIs(t, err, domain.ErrConflict)
+}
+
 // TestSameContent verifies the small helper that both classification and
 // overlap detection lean on.
 func TestSameContent(t *testing.T) {

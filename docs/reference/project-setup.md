@@ -108,6 +108,7 @@ config/secrets.yaml
 3. Create the actual environment files with your secrets
 4. Run `envsecrets push` to encrypt and upload
 5. Team members run `envsecrets pull` to get the files
+6. On any machine, run `envsecrets status` to see whether to push, pull, or reconcile next; or `envsecrets sync` to do it automatically
 
 ## Multiple Environments
 
