@@ -120,5 +120,9 @@ func runPull(cmd *cobra.Command, args []string) error {
 		out.Printf("At ref: %s\n", ui.TruncateHash(result.Ref))
 	}
 
+	if result.Warning != "" {
+		out.Warn("%s", result.Warning)
+	}
+
 	return nil
 }

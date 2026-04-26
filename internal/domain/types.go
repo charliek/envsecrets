@@ -168,6 +168,10 @@ type PullResult struct {
 	// FilesWithConflicts lists files that would be overwritten by pull
 	// These are files that exist locally with different content than remote
 	FilesWithConflicts []string `json:"files_with_conflicts,omitempty"`
+	// Warning is a non-fatal advisory the caller should surface to the user.
+	// Currently used to flag when the post-pull baseline marker write failed
+	// (pull succeeded locally but this machine kept a stale LAST_SYNCED).
+	Warning string `json:"warning,omitempty"`
 }
 
 // StorageFormatInfo describes the storage format version found in a remote repo

@@ -152,6 +152,9 @@ func runSyncPull(ctx context.Context, syncer *sync.Syncer, status *domain.SyncSt
 	if result.FilesSkipped > 0 {
 		out.Printf("  %d file(s) unchanged\n", result.FilesSkipped)
 	}
+	if result.Warning != "" {
+		out.Warn("%s", result.Warning)
+	}
 	return nil
 }
 

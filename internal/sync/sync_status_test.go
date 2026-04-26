@@ -401,6 +401,52 @@ func TestSyncStatus_FirstPull_NoBaseline_TreeDiffers(t *testing.T) {
 	require.Equal(t, domain.SyncActionFirstPull, s.Action)
 }
 
+// TestPull_WarnsOnLastSyncedWriteFailure: symmetric with the push test —
+// when the post-pull marker write fails the result must surface a Warning.
+// Otherwise the next status would silently use a stale baseline.
+func TestPull_WarnsOnLastSyncedWriteFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — chmod-based denial doesn't apply")
+	}
+
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	b := env.newMachine(t, []string{".env"})
+
+	a.writeFile(".env", "X=1")
+	a.push()
+
+	// Make B's cache .git read-only AFTER any prior init, then trigger pull.
+	// Pull's SyncFromStorage will write into .git/objects/, so chmodding
+	// before the first pull would break SyncFromStorage itself. Instead,
+	// do an initial pull so the cache exists, then chmod for the second.
+	b.pull()
+
+	a.writeFile(".env", "X=2")
+	a.push()
+
+	gitDir := filepath.Join(b.cache.Path(), ".git")
+	require.NoError(t, os.Chmod(gitDir, 0500))
+	t.Cleanup(func() { _ = os.Chmod(gitDir, 0700) })
+
+	probe := filepath.Join(gitDir, ".write-probe")
+	if err := os.WriteFile(probe, []byte("x"), 0600); err == nil {
+		_ = os.Remove(probe)
+		t.Skip("filesystem ignores chmod 500 on directories — cannot simulate write failure")
+	}
+
+	res, err := b.syncer.Pull(context.Background(), PullOptions{Force: true})
+	if err != nil {
+		// SyncFromStorage may also fail because of the read-only .git;
+		// that's fine — the test's purpose is to exercise the marker-write
+		// branch, which only runs after a successful pull. Skip in that case.
+		t.Skipf("pull infrastructure depends on .git being writable: %v", err)
+	}
+	require.NotEmpty(t, res.Warning, "marker write failure must produce a Warning")
+	require.Contains(t, res.Warning, "stale baseline",
+		"warning should explain the user-visible consequence")
+}
+
 // TestPush_WarnsOnLastSyncedWriteFailure: when WriteLastSynced fails after a
 // successful remote push, the result must surface a warning so callers know
 // the next push could spuriously hit ErrDivergedHistory. We simulate the

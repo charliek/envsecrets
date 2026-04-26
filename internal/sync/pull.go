@@ -244,11 +244,19 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 
 	// Record this machine's new sync baseline only for full-HEAD pulls (not
 	// --ref, which intentionally checks out a historical commit). Best-effort:
-	// a write failure here doesn't roll back successfully-pulled files.
+	// a write failure here doesn't roll back successfully-pulled files, but
+	// it MUST be surfaced — symmetric with push's behavior. Otherwise the
+	// next `status` would silently use a stale baseline and could mislead
+	// the user about whether they need to push or pull.
 	if !opts.DryRun && opts.Ref == "" {
 		head, err := s.cache.Head()
 		if err == nil && head != "" {
-			_ = s.cache.WriteLastSynced(head)
+			if wErr := s.cache.WriteLastSynced(head); wErr != nil {
+				result.Warning = fmt.Sprintf(
+					"pull succeeded but failed to update local sync baseline: %v; subsequent status may show stale baseline info until the next successful push or pull",
+					wErr,
+				)
+			}
 		}
 	}
 
