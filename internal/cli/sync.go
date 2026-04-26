@@ -27,6 +27,8 @@ sync inspects the same signals 'status' uses, then performs the safe action:
   in_sync          -> nothing to do
   push             -> envsecrets push
   pull             -> envsecrets pull
+  first_pull       -> envsecrets pull (initialize this machine's baseline,
+                      e.g. fresh clone, post-reset, or upgraded client)
   pull_then_push   -> pull, then push (no overlapping changes)
   reconcile        -> print guidance and exit non-zero (sync does NOT
                       auto-resolve overlapping conflicts; resolve with
