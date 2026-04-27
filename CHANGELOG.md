@@ -14,6 +14,8 @@ All notable changes to this project will be documented in this file.
 
 Storage format unchanged — the `LAST_SYNCED` marker is local-only, never uploaded. Old clients on other machines keep working seamlessly; new clients gain the recommendations and safety on their own pushes.
 
+- **Fix docs workflow**: pin `astral-sh/setup-uv` to `@v7` (the repo doesn't publish a floating `v8` tag, so the `Documentation` workflow had been failing since April 1).
+
 ## v0.0.4
 
 - Fix stale local cache in multi-machine scenarios by fetching latest remote state before push/pull operations
