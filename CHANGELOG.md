@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.7
+
+- **Fix Homebrew formula test block**: the v0.0.6 formula called a non-existent `envsecrets version` subcommand (envsecrets uses the `--version` flag instead), causing `brew test` and `brew audit --strict` to fail. End-user `brew install` was unaffected. Updated `.goreleaser.yaml` so the regenerated formula uses `--version`.
+
 ## v0.0.6
 
 - **Homebrew distribution**: `envsecrets` is now installable via `brew install charliek/tap/envsecrets` on macOS and Linux. Each tagged release auto-publishes a formula to [charliek/homebrew-tap](https://github.com/charliek/homebrew-tap) via GoReleaser, so `brew upgrade` will track new releases automatically.
