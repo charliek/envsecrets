@@ -47,7 +47,7 @@ brews:
     install: |
       bin.install "envsecrets"
     test: |
-      system bin/"envsecrets", "version"
+      system bin/"envsecrets", "--version"
 
 checksum:
   name_template: "checksums.txt"
