@@ -2,6 +2,10 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.6
+
+- **Homebrew distribution**: `envsecrets` is now installable via `brew install charliek/tap/envsecrets` on macOS and Linux. Each tagged release auto-publishes a formula to [charliek/homebrew-tap](https://github.com/charliek/homebrew-tap) via GoReleaser, so `brew upgrade` will track new releases automatically.
+
 ## v0.0.5
 
 - **Multi-machine sync clarity**: `envsecrets status` now ends with an unambiguous "do this next" recommendation (in_sync / push / pull / pull_then_push / reconcile / first_push_init / first_pull). Computed from a 3-way diff of working tree vs new `LAST_SYNCED` baseline vs remote HEAD.
