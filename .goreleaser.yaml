@@ -32,6 +32,23 @@ archives:
     files:
       - none*
 
+brews:
+  - name: envsecrets
+    ids:
+      - default
+    repository:
+      owner: charliek
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/charliek/envsecrets"
+    description: "CLI tool for managing encrypted environment files using GCS and age encryption"
+    license: "MIT"
+    install: |
+      bin.install "envsecrets"
+    test: |
+      system bin/"envsecrets", "version"
+
 checksum:
   name_template: "checksums.txt"
   algorithm: sha256
