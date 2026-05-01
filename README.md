@@ -15,11 +15,19 @@ CLI tool for managing encrypted environment files using GCS and age encryption.
 
 ## Installation
 
+### Homebrew (macOS, Linux)
+
+```bash
+brew install charliek/tap/envsecrets
+```
+
+### Go install
+
 ```bash
 go install github.com/charliek/envsecrets/cmd/envsecrets@latest
 ```
 
-Or build from source:
+### From source
 
 ```bash
 git clone https://github.com/charliek/envsecrets.git
