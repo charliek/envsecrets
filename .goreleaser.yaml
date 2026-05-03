@@ -32,6 +32,21 @@ archives:
     files:
       - none*
 
+nfpms:
+  - id: envsecrets-deb
+    package_name: envsecrets
+    file_name_template: "envsecrets_{{ .Version }}_{{ .Arch }}"
+    vendor: charliek
+    homepage: "https://github.com/charliek/envsecrets"
+    maintainer: "Charlie Knudsen <charlie.knudsen@gmail.com>"
+    description: "CLI tool for managing encrypted environment files using GCS and age encryption"
+    license: MIT
+    formats:
+      - deb
+    bindir: /usr/local/bin
+    ids:
+      - envsecrets
+
 brews:
   - name: envsecrets
     ids:
