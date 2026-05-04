@@ -21,6 +21,33 @@ CLI tool for managing encrypted environment files using GCS and age encryption.
 brew install charliek/tap/envsecrets
 ```
 
+### Linux (apt)
+
+```bash
+sudo install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://apt.stridelabs.ai/pubkey.gpg | \
+  sudo tee /etc/apt/keyrings/apt-charliek.gpg > /dev/null
+echo 'deb [signed-by=/etc/apt/keyrings/apt-charliek.gpg] https://apt.stridelabs.ai noble main' | \
+  sudo tee /etc/apt/sources.list.d/apt-charliek.list
+sudo apt update
+sudo apt install envsecrets
+```
+
+Tested on Pop!_OS 24.04 and Ubuntu 24.04+. Architectures: `amd64`, `arm64`. See [apt-charliek](https://github.com/charliek/apt-charliek) for the full repo.
+
+### Linux (`.deb` download, no apt repo)
+
+For one-off installs without configuring the apt repo (CI runners, locked-down hosts, etc.):
+
+```bash
+ARCH=$(dpkg --print-architecture)        # amd64 or arm64
+VERSION=0.0.8                            # check https://github.com/charliek/envsecrets/releases for the latest
+curl -fLO "https://github.com/charliek/envsecrets/releases/download/v${VERSION}/envsecrets_${VERSION}_${ARCH}.deb"
+sudo apt install -y "./envsecrets_${VERSION}_${ARCH}.deb"
+```
+
+The `apt install ./...deb` form resolves dependencies; plain `dpkg -i` would skip that step.
+
 ### Go install
 
 ```bash
