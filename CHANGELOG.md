@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.8
+
+- **Linux apt distribution**: `envsecrets` is now installable via `sudo apt install envsecrets` from [charliek/apt-charliek](https://github.com/charliek/apt-charliek) (`apt.stridelabs.ai`) on Pop!_OS 24.04 / Ubuntu 24.04+ for `amd64` and `arm64`. Each tagged release builds `envsecrets_<version>_<arch>.deb` via GoReleaser's `nfpms:` block, attaches the artifacts to the GitHub Release, and fires `repository_dispatch` at apt-charliek so `apt update` picks up the new version within minutes. A `.deb` download path is also documented for one-off installs without configuring the apt repo.
+- **CI release-snapshot job**: PRs now run `goreleaser release --snapshot` and validate both deb arches with `dpkg-deb`, catching broken nfpm config before it reaches a real tag.
+
 ## v0.0.7
 
 - **Fix Homebrew formula test block**: the v0.0.6 formula called a non-existent `envsecrets version` subcommand (envsecrets uses the `--version` flag instead), causing `brew test` and `brew audit --strict` to fail. End-user `brew install` was unaffected. Updated `.goreleaser.yaml` so the regenerated formula uses `--version`.
