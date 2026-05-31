@@ -31,7 +31,7 @@ jobs:
       - id: self-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id:      ${{ secrets.RELEASE_BOT_APP_ID }}
+          client-id:      ${{ secrets.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
 
       - name: Token sees envsecrets + bot identity
@@ -59,7 +59,7 @@ jobs:
       - id: tap-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id:      ${{ secrets.RELEASE_BOT_APP_ID }}
+          client-id:      ${{ secrets.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
           owner:        charliek
           repositories: homebrew-tap
@@ -78,7 +78,7 @@ jobs:
       - id: apt-token
         uses: actions/create-github-app-token@v3
         with:
-          app-id:      ${{ secrets.RELEASE_BOT_APP_ID }}
+          client-id:      ${{ secrets.RELEASE_BOT_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
           owner:        charliek
           repositories: apt-charliek
