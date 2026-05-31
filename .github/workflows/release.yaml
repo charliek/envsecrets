@@ -8,6 +8,12 @@ on:
 permissions:
   contents: write
 
+# Serialize re-runs against the same tag — better to wait than to abort
+# half-uploaded artifacts.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     name: Build and Release
@@ -33,6 +39,25 @@ jobs:
         with:
           version: v2.10.1
 
+      # Mint a release-bot App token scoped to charliek/homebrew-tap for
+      # GoReleaser's `brews:` step (formula push). The App must be
+      # installed on homebrew-tap (verify via sanity-check-app.yml).
+      # Replaces the legacy HOMEBREW_TAP_TOKEN PAT — GoReleaser is
+      # token-source-agnostic; it just uses HOMEBREW_TAP_TOKEN from the
+      # env for git authentication.
+      - name: Mint a homebrew-tap App token
+        id: tap
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id:      ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          owner:        charliek
+          repositories: homebrew-tap
+          # Defense-in-depth: explicit permission floor on the minted
+          # token so a future widening of the App's installation perms
+          # doesn't silently broaden what this token can do.
+          permission-contents: write
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -40,28 +65,53 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # GoReleaser reads HOMEBREW_TAP_TOKEN from this env var (see
+          # .goreleaser.yaml: brews[].repository.token). Feed it the
+          # App-minted token instead of a PAT.
+          HOMEBREW_TAP_TOKEN: ${{ steps.tap.outputs.token }}
+
+      # Mint a release-bot App token scoped to charliek/apt-charliek for
+      # the publish dispatch. The App must be installed on apt-charliek
+      # (verify via sanity-check-app.yml). Replaces the legacy
+      # APT_DISPATCH_TOKEN PAT.
+      - name: Mint an apt-charliek App token
+        if: success()
+        id: apt
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id:      ${{ secrets.RELEASE_BOT_APP_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_APP_KEY }}
+          owner:        charliek
+          repositories: apt-charliek
+          # POST /repos/.../dispatches needs contents:write.
+          permission-contents: write
 
       - name: Trigger apt-charliek publish
         if: success()
+        env:
+          GH_TOKEN: ${{ steps.apt.outputs.token }}
         run: |
           # Retry the dispatch a few times — a transient network/API blip
           # shouldn't fail the release after GoReleaser already succeeded.
-          # apt-charliek's publish workflow is idempotent so a missed dispatch
-          # also self-heals on the next release, but we still want to flag
-          # genuinely persistent failures.
+          # apt-charliek's publish workflow is idempotent so a missed
+          # dispatch self-heals on the next release, but we still want to
+          # flag genuinely persistent failures.
           for attempt in 1 2 3; do
+            # Capture stderr so a real install-state failure (App not
+            # installed on apt-charliek, scoped-perms mismatch, etc.) is
+            # diagnosable from the workflow log without re-running.
             if gh api repos/charliek/apt-charliek/dispatches \
               --method POST \
               -f event_type=publish \
               -F "client_payload[package]=envsecrets" \
-              -F "client_payload[tag]=${{ github.ref_name }}"; then
+              -F "client_payload[tag]=${{ github.ref_name }}" 2>&1; then
               echo "::notice::Watch apt publish at https://github.com/charliek/apt-charliek/actions"
               exit 0
             fi
-            echo "dispatch attempt $attempt failed; sleeping $((attempt * 5))s"
-            [ "$attempt" -eq 3 ] && exit 1
+            echo "::warning::dispatch attempt $attempt failed; sleeping $((attempt * 5))s"
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::apt-charliek dispatch failed after 3 attempts — check the stderr above for the API error"
+              exit 1
+            fi
             sleep $((attempt * 5))
           done
-        env:
-          GH_TOKEN: ${{ secrets.APT_DISPATCH_TOKEN }}
