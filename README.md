@@ -41,7 +41,10 @@ For one-off installs without configuring the apt repo (CI runners, locked-down h
 
 ```bash
 ARCH=$(dpkg --print-architecture)        # amd64 or arm64
-VERSION=0.0.8                            # check https://github.com/charliek/envsecrets/releases for the latest
+# Resolve the latest tag from GitHub's `latest` redirect — no manual edits needed when a new version ships.
+VERSION=$(curl -fsS -o /dev/null -w '%{redirect_url}' \
+            https://github.com/charliek/envsecrets/releases/latest \
+          | sed 's#.*/v##')
 curl -fLO "https://github.com/charliek/envsecrets/releases/download/v${VERSION}/envsecrets_${VERSION}_${ARCH}.deb"
 sudo apt install -y "./envsecrets_${VERSION}_${ARCH}.deb"
 ```
