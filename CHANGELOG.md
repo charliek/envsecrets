@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## v0.0.9
+
+- **Release pipeline on the `cc-plugins:release-workflows` convention**: envsecrets is the fifth consumer of the framework (after strix, roost, prox, codelens). Both legacy PATs (`HOMEBREW_TAP_TOKEN`, `APT_DISPATCH_TOKEN`) are retired in favor of `charliek-release-bot` App tokens minted at workflow time, scoped to each target repo via `actions/create-github-app-token`'s `owner`+`repositories` inputs with `permission-contents: write` defense-in-depth. GoReleaser still uses `HOMEBREW_TAP_TOKEN` as its env-var name; the workflow now sets it from the App-minted token instead of from `secrets`. The dispatch retry loop now captures stderr so a real install-state failure (App not installed on a target, scope mismatch, etc.) is diagnosable from the workflow log. Same release flow as before — `/release-workflows:release vX.Y.Z` — but no per-pipeline PATs to rotate. (#11)
+- **README .deb install snippet auto-resolves the latest tag**: the previous example hardcoded `VERSION=0.0.8`, which silently drifted on every release. Now uses `curl -fsS -o /dev/null -w '%{redirect_url}'` on the GitHub `releases/latest` redirect, so the snippet always installs the current version with no doc maintenance. (#11)
+- **Branch protection ruleset on `main`** (created during the migration): `deletion` + `non_fast_forward` rules with the release-bot App (id `3902108`, `Integration`) and admin role (id `5`, `RepositoryRole`) in `bypass_actors`. Previously envsecrets had no branch protection at all. (#11)
+- **`sanity-check-app.yml`**: new manual workflow that verifies the release-bot App can reach `homebrew-tap` and `apt-charliek` before a release tries to push to them. Catches App-install-on-target-repo mistakes early.
+- **`RELEASING.md`**: per-repo release policy, break-glass recovery runbooks, secrets table, failure-mode table.
+
 ## v0.0.8
 
 - **Linux apt distribution**: `envsecrets` is now installable via `sudo apt install envsecrets` from [charliek/apt-charliek](https://github.com/charliek/apt-charliek) (`apt.stridelabs.ai`) on Pop!_OS 24.04 / Ubuntu 24.04+ for `amd64` and `arm64`. Each tagged release builds `envsecrets_<version>_<arch>.deb` via GoReleaser's `nfpms:` block, attaches the artifacts to the GitHub Release, and fires `repository_dispatch` at apt-charliek so `apt update` picks up the new version within minutes. A `.deb` download path is also documented for one-off installs without configuring the apt repo.
