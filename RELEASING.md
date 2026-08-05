@@ -60,7 +60,7 @@ version is the git tag, injected at build time via:
 in-repo history; GoReleaser's auto-generated release notes go on the
 GitHub Release body separately.
 
-`pyproject.toml` is for mkdocs only; has its own version cadence.
+`pyproject.toml` is for the docs site only; has its own version cadence.
 
 ## Snapshot / dev versioning
 
