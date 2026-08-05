@@ -47,12 +47,12 @@ coverage:
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report: coverage.html"
 
-# Build documentation
+# Build documentation (same as CI)
 docs:
-	uv sync --group docs
-	uv run mkdocs build
+	uv sync --locked --group docs
+	uv run --locked zensical build --strict
 
 # Serve documentation locally
 docs-serve:
-	uv sync --group docs
-	uv run mkdocs serve
+	uv sync --locked --group docs
+	uv run --locked zensical serve
