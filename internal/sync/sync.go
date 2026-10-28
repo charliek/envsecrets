@@ -46,10 +46,15 @@ type PushOptions struct {
 	DryRun bool
 	// Force pushes even if there are conflicts with remote
 	Force bool
-	// AllowDeletes lets the push delete files from remote: tracked files
+	// AllowDeletes lets the push delete any files from remote: tracked files
 	// missing from the working tree, and files no longer tracked. Without
-	// it, Push returns a *domain.PendingDeletionsError instead.
+	// it, every deletion must be listed in ConfirmedDeletions or Push
+	// returns a *domain.PendingDeletionsError instead.
 	AllowDeletes bool
+	// ConfirmedDeletions approves deleting exactly these files. A deletion
+	// discovered after confirmation (e.g. a file another machine published
+	// meanwhile) is not covered, so Push refuses rather than delete it unseen.
+	ConfirmedDeletions []string
 }
 
 // ConflictAction represents how to handle a file conflict

@@ -48,15 +48,23 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		files = nil // No tracked files — orphan cleanup will handle removals
 	}
 
-	// Refuse to delete anything from remote unless the caller opted in.
-	// Checked before the cache is touched so a refusal leaves no partial state.
+	// Refuse to delete anything from remote the caller didn't approve.
+	// Checked after syncing from storage, so files published by another
+	// machine since confirmation are included, and before the cache is
+	// touched so a refusal leaves no partial state.
 	if !opts.AllowDeletes && !opts.DryRun {
 		deletions, err := s.pendingDeletions(files)
 		if err != nil {
 			return nil, err
 		}
-		if len(deletions) > 0 {
-			return nil, &domain.PendingDeletionsError{Files: deletions}
+		confirmed := make(map[string]bool, len(opts.ConfirmedDeletions))
+		for _, f := range opts.ConfirmedDeletions {
+			confirmed[f] = true
+		}
+		for _, f := range deletions {
+			if !confirmed[f] {
+				return nil, &domain.PendingDeletionsError{Files: deletions}
+			}
 		}
 	}
 

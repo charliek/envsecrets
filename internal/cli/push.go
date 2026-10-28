@@ -88,9 +88,11 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 	result, err := syncer.Push(ctx, opts)
 
-	// Deleting files from remote needs explicit confirmation
+	// Deleting files from remote needs confirmation of the exact files. If
+	// the set grows before the retry (another machine pushed meanwhile),
+	// Push refuses again and the new set is confirmed from scratch.
 	var pending *domain.PendingDeletionsError
-	if errors.As(err, &pending) {
+	for errors.As(err, &pending) {
 		out.Warn("This push would delete %d file(s) from remote:", len(pending.Files))
 		for _, f := range pending.Files {
 			out.Printf("  %s\n", f)
@@ -107,7 +109,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 			out.Println("Aborted.")
 			return nil
 		}
-		opts.AllowDeletes = true
+		opts.ConfirmedDeletions = pending.Files
 		result, err = syncer.Push(ctx, opts)
 	}
 	if err != nil {

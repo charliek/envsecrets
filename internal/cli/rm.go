@@ -92,8 +92,8 @@ func runRm(cmd *cobra.Command, args []string) error {
 		// Push changes — orphan cleanup in Push handles cache removal
 		syncer := sync.NewSyncer(pc.Discovery, pc.RepoInfo, pc.Storage, pc.Encrypter, pc.Cache)
 		_, err = syncer.Push(ctx, sync.PushOptions{
-			Message:      "Remove " + filename,
-			AllowDeletes: true, // Removal from remote is the point of rm
+			Message:            "Remove " + filename,
+			ConfirmedDeletions: []string{filename}, // Only the file being removed
 		})
 		if err != nil {
 			// Only ignore "nothing to commit" - warn about other errors

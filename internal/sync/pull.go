@@ -280,6 +280,7 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			}
 		}
 		result.FilesDeleted += len(filesToDelete)
+		result.DeletedFiles = append(result.DeletedFiles, filesToDelete...)
 		return result, nil
 	}
 
@@ -304,6 +305,7 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 			return nil, fmt.Errorf("failed to remove %s: %w", f, err)
 		}
 		result.FilesDeleted++
+		result.DeletedFiles = append(result.DeletedFiles, f)
 	}
 
 	// Clear conflicts from result if we successfully wrote them (with --force)

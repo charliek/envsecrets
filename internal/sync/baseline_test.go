@@ -156,3 +156,77 @@ func TestPush_DryRunReportsDeletionsWithoutRefusing(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 1, res.FilesDeleted)
 }
+
+func TestPush_ConfirmedDeletionsAllowExactlyThoseFiles(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	a.writeFile(".env", "X=1")
+	a.writeFile(".env.local", "L=1")
+	a.push()
+
+	a.deleteFile(".env.local")
+	res, err := a.syncer.Push(context.Background(), PushOptions{
+		Message:            "confirmed",
+		ConfirmedDeletions: []string{".env.local"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, res.FilesDeleted)
+}
+
+// A file another machine publishes after this push's deletions were
+// confirmed must not be deleted unseen: the confirmed set no longer covers
+// everything the push would delete.
+func TestPush_RefusesDeletionAddedAfterConfirmation(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	b := env.newMachine(t, []string{".env", ".env.local", ".env.new"})
+	a.writeFile(".env", "X=1")
+	a.writeFile(".env.local", "L=1")
+	a.push()
+	b.pull()
+
+	// A confirms deleting .env.local; meanwhile B publishes .env.new,
+	// which A doesn't track (so A's push would orphan-delete it)
+	a.deleteFile(".env.local")
+	b.writeFile(".env.new", "N=1")
+	b.push()
+
+	_, err := a.syncer.Push(context.Background(), PushOptions{
+		Message:            "stale confirmation",
+		ConfirmedDeletions: []string{".env.local"},
+	})
+	var pending *domain.PendingDeletionsError
+	require.True(t, errors.As(err, &pending))
+	require.ElementsMatch(t, []string{".env.local", ".env.new"}, pending.Files)
+
+	// Remote still has B's file
+	b.writeFile(".env", "X=1")
+	require.Equal(t, domain.SyncActionInSync, b.status().Action)
+}
+
+// revert --push to a version that predates a tracked file deletes it locally;
+// publishing the rollback must be allowed for exactly those files.
+func TestRevertPush_PublishesRollbackDeletions(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	a.writeFile(".env", "X=1")
+	first := a.push().CommitHash
+	a.writeFile(".env.local", "L=1")
+	a.push()
+
+	pullRes, err := a.syncer.Pull(context.Background(), PullOptions{Ref: first, Force: true})
+	require.NoError(t, err)
+	require.Equal(t, []string{".env.local"}, pullRes.DeletedFiles)
+
+	pushRes, err := a.syncer.Push(context.Background(), PushOptions{
+		Message:            "revert",
+		Force:              true,
+		ConfirmedDeletions: pullRes.DeletedFiles,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 1, pushRes.FilesDeleted)
+
+	c := env.newMachine(t, []string{".env", ".env.local"})
+	c.pull()
+	require.NoFileExists(t, filepath.Join(c.projectDir, ".env.local"))
+}
