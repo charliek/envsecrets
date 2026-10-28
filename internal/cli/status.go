@@ -168,7 +168,10 @@ func printSyncRecommendation(out *ui.Output, s *domain.SyncStatus) {
 	case domain.SyncActionFirstPushInit:
 		out.Println("  → Remote not initialized. Run: envsecrets push")
 	case domain.SyncActionFirstPull:
-		out.Println("  → No sync baseline on this machine. Run: envsecrets pull")
+		out.Println("  → No sync baseline for this checkout. Run: envsecrets pull")
+	case domain.SyncActionRestore:
+		out.Printf("  → None of the tracked files exist locally. Run: envsecrets pull to restore %d file(s)\n", len(s.Missing))
+		printFileList(out, "    ", s.Missing)
 	case domain.SyncActionNothingTracked:
 		out.Println("  Nothing tracked yet — add files to .envsecrets and run: envsecrets push")
 	default:

@@ -69,7 +69,7 @@ you meant; and the `pymdownx.emoji` callables live in the
 - **internal/config/**: YAML config parsing (`~/.envsecrets/config.yaml`); includes optional `machine_id`
 - **internal/crypto/**: Age + scrypt encryption (`AgeEncrypter` interface)
 - **internal/storage/**: Cloud storage abstraction with GCS implementation
-- **internal/cache/**: Local git-based cache for encrypted files (`~/.envsecrets/cache/owner/repo/`); also owns the per-machine `LAST_SYNCED` marker at `.git/.envsecrets-last-synced`
+- **internal/cache/**: Local git-based cache for encrypted files (`~/.envsecrets/cache/owner/repo/`); reads and writes the `LAST_SYNCED` baseline, which lives per checkout (`UseCheckoutBaseline`); the legacy shared marker at `.git/.envsecrets-last-synced` is only read to migrate it (`AdoptLegacyBaseline`)
 - **internal/sync/**: Push/pull/sync orchestration; `GetSyncStatus` does the 3-way classification (working tree vs `LAST_SYNCED` baseline vs remote HEAD) that drives `status` and `sync` recommendations and the push divergence safety check
 - **internal/project/**: Project discovery (finds git root, parses `.envsecrets` file)
 - **internal/git/**: Git operations via go-git library; commit author is stamped as `$USER@<machine_id>`, where `<machine_id>` defaults to the system `$hostname` and can be overridden via the `ENVSECRETS_MACHINE_ID` environment variable (or the `machine_id` config field, which the CLI exports into the env var on startup)
@@ -82,13 +82,13 @@ you meant; and the `pymdownx.emoji` callables live in the
 
 **Pull**: Download from GCS → Checkout commit → 3-way diff per file (overwrite stale tree, preserve local-only edits, conflict only when both sides changed the same file) → Decrypt → Write to project directory → Update `LAST_SYNCED` (only on full-HEAD pull, NOT for `pull --ref <hash>`)
 
-**Status / Sync**: 3-way classify each tracked file → recommend one of `in_sync`/`push`/`pull`/`pull_then_push`/`reconcile`/`first_push_init`/`first_pull`; `sync` executes the recommendation, refusing with exit code 16 on reconcile
+**Status / Sync**: 3-way classify each tracked file → recommend one of `in_sync`/`push`/`pull`/`pull_then_push`/`reconcile`/`first_push_init`/`first_pull`/`restore` (`restore` when no tracked file exists locally but remote has them); `sync` executes the recommendation, never publishes remote deletions (push requires `AllowDeletes`), refusing with exit code 16 on reconcile
 
 ### Configuration
 
 - Config file: `~/.envsecrets/config.yaml`
 - Cache directory: `~/.envsecrets/cache/owner/repo/`
-- Per-machine baseline marker: `~/.envsecrets/cache/owner/repo/.git/.envsecrets-last-synced` (never uploaded)
+- Per-checkout baseline marker: `<project git dir>/envsecrets/owner/repo/last-synced` (never uploaded; worktrees get their own under `.git/worktrees/<name>/`). Legacy location `~/.envsecrets/cache/owner/repo/.git/.envsecrets-last-synced` is adopted only by a checkout whose working tree matches its commit (`Syncer.readBaseline`)
 - Project tracking file: `.envsecrets` (lists files to track, one per line; supports `repo: owner/name` directive)
 
 ### Design Patterns

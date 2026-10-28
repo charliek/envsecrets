@@ -102,6 +102,17 @@ func NewProjectContext(ctx context.Context, cfg *config.Config) (*ProjectContext
 		return nil, err
 	}
 
+	// Track the sync baseline per checkout, not per cache: the cache is
+	// shared by every clone and worktree of this repo on the machine.
+	if discovery != nil {
+		baselinePath, err := discovery.SyncBaselinePath(repoInfo)
+		if err != nil {
+			returnErr = err
+			return nil, err
+		}
+		cacheRepo.UseCheckoutBaseline(baselinePath)
+	}
+
 	return &ProjectContext{
 		Config:    cfg,
 		Discovery: discovery,

@@ -132,9 +132,17 @@ func runRevert(cmd *cobra.Command, args []string) error {
 			commitMessage = fmt.Sprintf("Revert to %s", refDisplay)
 		}
 
+		// Tracked files absent at ref are part of the confirmed rollback;
+		// anything else a push would delete still needs confirmation
+		rollbackDeletions, err := syncer.FilesAbsentAtRef(ref)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", refDisplay, err)
+		}
+
 		pushOpts := sync.PushOptions{
-			Message: commitMessage,
-			Force:   true,
+			Message:            commitMessage,
+			Force:              true,
+			ConfirmedDeletions: rollbackDeletions,
 		}
 
 		pushResult, err = syncer.Push(ctx, pushOpts)
@@ -149,6 +157,7 @@ func runRevert(cmd *cobra.Command, args []string) error {
 			"ref":           ref,
 			"files_updated": result.FilesUpdated,
 			"files_created": result.FilesCreated,
+			"files_deleted": result.FilesDeleted,
 			"dry_run":       revertDryRun,
 		}
 		if revertPush && revertDryRun {
@@ -169,6 +178,9 @@ func runRevert(cmd *cobra.Command, args []string) error {
 		if result.FilesUpdated > 0 {
 			out.Printf("  %d file(s) would be updated\n", result.FilesUpdated)
 		}
+		if result.FilesDeleted > 0 {
+			out.Printf("  %d file(s) would be deleted\n", result.FilesDeleted)
+		}
 		if revertPush {
 			out.Println()
 			out.Println("Would push reverted state as new commit.")
@@ -180,6 +192,9 @@ func runRevert(cmd *cobra.Command, args []string) error {
 		}
 		if result.FilesUpdated > 0 {
 			out.Printf("  %d file(s) updated\n", result.FilesUpdated)
+		}
+		if result.FilesDeleted > 0 {
+			out.Printf("  %d file(s) deleted\n", result.FilesDeleted)
 		}
 
 		if pushResult != nil {

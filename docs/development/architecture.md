@@ -106,9 +106,9 @@ cmd/envsecrets
 
 1. Read `LAST_SYNCED` baseline + sync from GCS (so cache reflects remote)
 2. Run the same 3-way classification as pull, producing per-file `LocalChanges` / `RemoteChanges` / `Conflicts` slices
-3. Map to a `SyncAction`: `in_sync` / `push` / `pull` / `pull_then_push` / `reconcile` / `first_push_init` / `first_pull` / `nothing_tracked`
+3. Map to a `SyncAction`: `in_sync` / `push` / `pull` / `pull_then_push` / `reconcile` / `first_push_init` / `first_pull` / `restore` / `nothing_tracked`. `restore` is chosen before classification when none of the tracked files exist locally but remote has them, so a wiped working tree is restored rather than pushed as deletions
 4. `status` renders the action plus provenance (remote HEAD's author/timestamp, this machine's last-synced commit + age) for the user
-5. `sync` executes the action automatically — push, pull, or pull-then-push — and refuses with exit 16 (`ExitActionRequired`) on `reconcile` or `first_push_init` (initialization is intentionally manual)
+5. `sync` executes the action automatically — push, pull, or pull-then-push — and refuses with exit 16 (`ExitActionRequired`) on `reconcile` or `first_push_init` (initialization is intentionally manual), or when its push would delete files from remote
 
 ## Cache Structure
 
@@ -119,7 +119,7 @@ cmd/envsecrets
     └── {owner}/
         └── {repo}/
             ├── .git/                              # Full git history (restored from packfile)
-            │   └── .envsecrets-last-synced        # Per-machine baseline marker; never uploaded
+            │   └── .envsecrets-last-synced        # Legacy baseline marker; adopted by one checkout, then removed
             ├── .env.age                           # Encrypted files (working tree, populated by checkout)
             └── .env.local.age
 ```
@@ -127,12 +127,35 @@ cmd/envsecrets
 The cache is a git repository containing only encrypted files. Full git history
 is synced between machines via packfiles stored in GCS.
 
-The `LAST_SYNCED` marker lives **inside** `.git/` so go-git's force-checkout
-during `pull --ref` cannot wipe it as an "untracked" file. It contains a
-single 40-char hex commit hash recording the most recent `push` or full-HEAD
-`pull` this machine successfully completed. `cache.Reset()` (which removes
-the entire cache directory) intentionally clears it — Reset implies the
-cache is no longer trusted, so the baseline must also be discarded.
+The `LAST_SYNCED` baseline describes one working tree, but the cache is
+shared by every clone and worktree of a repo on the machine. So it lives in
+the project checkout's git directory, at
+`<git dir>/envsecrets/{owner}/{repo}/last-synced` (`Discovery.SyncBaselinePath`;
+a worktree's git dir is `.git/worktrees/<name>/`). It contains a single
+40-char hex commit hash recording the most recent `push` or full-HEAD `pull`
+this checkout successfully completed. `cache.Reset()` intentionally clears
+it — Reset implies the cache is no longer trusted, so the baseline must also
+be discarded.
+
+Older versions kept the marker inside the cache's `.git/`, and it doesn't
+record which checkout wrote it. A checkout with no baseline of its own adopts
+that legacy marker only if its working tree matches the marker's commit
+(`Syncer.readBaseline`), which identifies it as the checkout that synced it.
+It claims the file with an atomic rename, so only one checkout can adopt it;
+a non-matching checkout puts it back and starts with no baseline (first
+pull). Adopting it in a stale checkout would make old content look like
+local edits that `sync` would push over newer remote content.
+
+Push never deletes a file from remote unless the caller approved it:
+either blanket `PushOptions.AllowDeletes` (`push --allow-missing`/`--force`)
+or by name in `PushOptions.ConfirmedDeletions` (the interactive `push`
+confirmation, `rm` for the file it removes, `revert --push` for the tracked
+files absent at the target ref). Otherwise it returns
+`*domain.PendingDeletionsError` listing every pending deletion, before
+touching the cache. Push reads all tracked files once up front and uses that
+snapshot for both approval and the commit, so a file deleted mid-push can't
+slip through, and the check runs after syncing from storage, so a file
+another machine published after confirmation is caught too.
 
 ## GCS Storage Layout
 

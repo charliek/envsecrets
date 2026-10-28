@@ -56,11 +56,23 @@ func (env *testEnv) newMachine(t *testing.T, tracked []string) *testMachine {
 	disc, err := project.NewDiscovery(projectDir)
 	require.NoError(t, err)
 
-	cacheDir := t.TempDir()
+	return env.newCheckout(t, projectDir, disc, t.TempDir())
+}
+
+// newCheckout wires a project checkout to a cache dir. Passing another
+// machine's cache dir simulates a second clone or worktree on the same
+// machine: one shared cache, separate working trees and baselines.
+func (env *testEnv) newCheckout(t *testing.T, projectDir string, disc *project.Discovery, cacheDir string) *testMachine {
+	t.Helper()
+
 	gitRepo, err := git.NewGoGitRepository(cacheDir)
 	require.NoError(t, err)
 	require.NoError(t, gitRepo.Init())
 	c := cache.NewCacheWithRepo(env.repoInfo, env.storage, gitRepo, cacheDir)
+
+	baselinePath, err := disc.SyncBaselinePath(env.repoInfo)
+	require.NoError(t, err)
+	c.UseCheckoutBaseline(baselinePath)
 
 	syncer := NewSyncer(disc, env.repoInfo, env.storage, env.encrypter, c)
 
@@ -72,6 +84,14 @@ func (env *testEnv) newMachine(t *testing.T, tracked []string) *testMachine {
 		discovery:  disc,
 		syncer:     syncer,
 	}
+}
+
+// baselineDir returns the directory holding this checkout's LAST_SYNCED marker
+func (m *testMachine) baselineDir() string {
+	m.t.Helper()
+	path, err := m.discovery.SyncBaselinePath(m.env.repoInfo)
+	require.NoError(m.t, err)
+	return filepath.Dir(path)
 }
 
 func (m *testMachine) writeFile(name, content string) {
@@ -425,7 +445,7 @@ func TestPull_WarnsOnLastSyncedWriteFailure(t *testing.T) {
 	a.writeFile(".env", "X=2")
 	a.push()
 
-	gitDir := filepath.Join(b.cache.Path(), ".git")
+	gitDir := b.baselineDir()
 	require.NoError(t, os.Chmod(gitDir, 0500))
 	t.Cleanup(func() { _ = os.Chmod(gitDir, 0700) })
 
@@ -467,8 +487,8 @@ func TestPush_WarnsOnLastSyncedWriteFailure(t *testing.T) {
 	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "init"})
 	require.NoError(t, err)
 
-	// Make the .git dir read-only so the LAST_SYNCED tmp+rename can't write.
-	gitDir := filepath.Join(a.cache.Path(), ".git")
+	// Make the baseline dir read-only so the LAST_SYNCED tmp+rename can't write.
+	gitDir := a.baselineDir()
 	require.NoError(t, os.Chmod(gitDir, 0500))
 	t.Cleanup(func() { _ = os.Chmod(gitDir, 0700) })
 
@@ -592,7 +612,7 @@ func TestPull_AppliesRemoteDeletion(t *testing.T) {
 	// A removes .env.local from disk and pushes. push handles
 	// "missing locally + present in cache" by deleting from cache.
 	require.NoError(t, os.Remove(filepath.Join(a.projectDir, ".env.local")))
-	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "drop .env.local"})
+	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "drop .env.local", AllowDeletes: true})
 	require.NoError(t, err)
 
 	// B pulls. .env.local should be removed from B's working tree.
@@ -617,10 +637,12 @@ func TestPull_AppliesRemoteDeletion(t *testing.T) {
 // reappear). Must surface to the resolver.
 func TestPull_LocalDeleteRemoteEditIsConflict(t *testing.T) {
 	env := newTestEnv()
-	a := env.newMachine(t, []string{".env"})
-	b := env.newMachine(t, []string{".env"})
+	// Two tracked files: deleting every one is the restore case instead
+	a := env.newMachine(t, []string{".env", ".env.local"})
+	b := env.newMachine(t, []string{".env", ".env.local"})
 
 	a.writeFile(".env", "X=1")
+	a.writeFile(".env.local", "L=1")
 	a.push()
 	b.pull()
 
@@ -649,7 +671,7 @@ func TestPull_BothDeletedConverges(t *testing.T) {
 
 	// A deletes .env.local and pushes.
 	require.NoError(t, os.Remove(filepath.Join(a.projectDir, ".env.local")))
-	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "a deletes"})
+	_, err := a.syncer.Push(context.Background(), PushOptions{Message: "a deletes", AllowDeletes: true})
 	require.NoError(t, err)
 
 	// B (independently) also deletes .env.local locally before pulling.

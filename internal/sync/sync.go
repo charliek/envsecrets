@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"time"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/crypto"
@@ -46,6 +47,15 @@ type PushOptions struct {
 	DryRun bool
 	// Force pushes even if there are conflicts with remote
 	Force bool
+	// AllowDeletes lets the push delete any files from remote: tracked files
+	// missing from the working tree, and files no longer tracked. Without
+	// it, every deletion must be listed in ConfirmedDeletions or Push
+	// returns a *domain.PendingDeletionsError instead.
+	AllowDeletes bool
+	// ConfirmedDeletions approves deleting exactly these files. A deletion
+	// discovered after confirmation (e.g. a file another machine published
+	// meanwhile) is not covered, so Push refuses rather than delete it unseen.
+	ConfirmedDeletions []string
 }
 
 // ConflictAction represents how to handle a file conflict
@@ -84,7 +94,7 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 	status := &domain.SyncStatus{}
 
 	// Read last-synced marker first (works even with no remote)
-	lastSynced, lastSyncedAt, _ := s.cache.ReadLastSynced()
+	lastSynced, lastSyncedAt := s.readBaseline()
 	status.LastSynced = lastSynced
 	status.LastSyncedAt = lastSyncedAt
 
@@ -152,6 +162,17 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 		return status, nil
 	}
 
+	// No tracked file exists locally (e.g. `git clean -fdX`, or a checkout
+	// that never pulled). Against the baseline every file looks deleted, but
+	// publishing that would wipe remote, so recommend restoring instead.
+	if missing, err := s.missingLocallyOnly(files); err != nil {
+		return nil, err
+	} else if len(missing) > 0 {
+		status.Action = domain.SyncActionRestore
+		status.Missing = missing
+		return status, nil
+	}
+
 	// Three-way classification: each tracked file vs (base=LastSynced, remote=HEAD, local=working tree).
 	// ErrRefNotFound here means LAST_SYNCED points at a commit the cache
 	// no longer has (corrupt baseline). Treat that exactly like a missing
@@ -185,6 +206,85 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 }
 
 // classifyFiles fills in LocalChanges/RemoteChanges/Conflicts on status.
+// readBaseline returns this checkout's last-synced commit. With no marker of
+// its own, it adopts the legacy shared marker if the working tree matches
+// that commit, i.e. this is the checkout that last synced it.
+func (s *Syncer) readBaseline() (string, time.Time) {
+	if hash, mtime, _ := s.cache.ReadLastSynced(); hash != "" {
+		return hash, mtime
+	}
+	return s.cache.AdoptLegacyBaseline(s.treeMatchesRef)
+}
+
+// treeMatchesRef reports whether every tracked file in the working tree has
+// the same content (and existence) as at ref. Any read or decrypt failure
+// counts as no match.
+func (s *Syncer) treeMatchesRef(ref string) bool {
+	files, err := s.discovery.EnvFiles()
+	if err != nil || len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		base, baseExists, err := s.readCacheAtRef(f, ref)
+		if err != nil {
+			return false
+		}
+		local, localExists, err := s.readWorkingTree(f)
+		if err != nil {
+			return false
+		}
+		if !sameContent(base, baseExists, local, localExists) {
+			return false
+		}
+	}
+	return true
+}
+
+// FilesAbsentAtRef returns the tracked files that do not exist at ref. A
+// rollback to ref deletes these, whether or not they are still present
+// locally (e.g. a retry after an earlier rollback push failed).
+func (s *Syncer) FilesAbsentAtRef(ref string) ([]string, error) {
+	files, err := s.discovery.EnvFiles()
+	if err != nil {
+		return nil, err
+	}
+	var absent []string
+	for _, f := range files {
+		_, err := s.cache.ReadEncryptedAtRef(f, ref)
+		switch {
+		case err == nil:
+		case errors.Is(err, domain.ErrFileNotFound):
+			absent = append(absent, f)
+		default:
+			return nil, err
+		}
+	}
+	return absent, nil
+}
+
+// missingLocallyOnly returns the tracked files remote has when NONE of the
+// tracked files exist in the working tree, and nil otherwise.
+func (s *Syncer) missingLocallyOnly(files []string) ([]string, error) {
+	for _, f := range files {
+		if s.discovery.FileExists(f) {
+			return nil, nil
+		}
+	}
+	var missing []string
+	for _, f := range files {
+		_, err := s.cache.ReadEncrypted(f)
+		switch {
+		case err == nil:
+			missing = append(missing, f)
+		case errors.Is(err, domain.ErrFileNotFound), errors.Is(err, domain.ErrNotInitialized):
+			// Not on remote either; nothing to restore
+		default:
+			return nil, err
+		}
+	}
+	return missing, nil
+}
+
 func (s *Syncer) classifyFiles(files []string, baseRef string, status *domain.SyncStatus) error {
 	for _, f := range files {
 		baseBytes, baseExists, err := s.readCacheAtRef(f, baseRef)

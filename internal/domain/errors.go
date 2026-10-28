@@ -3,6 +3,7 @@ package domain
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/charliek/envsecrets/internal/constants"
 )
@@ -36,7 +37,24 @@ var (
 	ErrFileSizeTooLarge = errors.New("file size exceeds limit")
 	ErrVersionTooNew    = errors.New("storage format version not supported")
 	ErrVersionUnknown   = errors.New("storage format not recognized")
+	// ErrUnconfirmedDeletion means a push would delete files from remote
+	// without the caller opting in (see PendingDeletionsError)
+	ErrUnconfirmedDeletion = errors.New("push would delete files from remote")
 )
+
+// PendingDeletionsError lists the files a push would delete from remote when
+// deletions were not explicitly allowed. It matches ErrUnconfirmedDeletion.
+type PendingDeletionsError struct {
+	Files []string
+}
+
+func (e *PendingDeletionsError) Error() string {
+	return fmt.Sprintf("%v: %s", ErrUnconfirmedDeletion, strings.Join(e.Files, ", "))
+}
+
+func (e *PendingDeletionsError) Unwrap() error {
+	return ErrUnconfirmedDeletion
+}
 
 // ExitCodeError wraps an error with an exit code
 type ExitCodeError struct {
@@ -84,7 +102,7 @@ func errorToExitCode(err error) int {
 		return constants.ExitNoEnvFiles
 	case errors.Is(err, ErrConflict), errors.Is(err, ErrRemoteChanged), errors.Is(err, ErrDivergedHistory):
 		return constants.ExitConflict
-	case errors.Is(err, ErrActionRequired):
+	case errors.Is(err, ErrActionRequired), errors.Is(err, ErrUnconfirmedDeletion):
 		return constants.ExitActionRequired
 	case errors.Is(err, ErrDecryptFailed), errors.Is(err, ErrNoPassphrase):
 		return constants.ExitDecryptFailed
