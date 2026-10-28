@@ -187,7 +187,7 @@ envsecrets list [repo]
 Without arguments, lists all repositories. With a repo name, lists files in that repo.
 With `--current`, auto-detects the current repository from git remote.
 
-Internal storage files (FORMAT, HEAD, objects.pack, refs) are filtered from output.
+Files are read from the repository's current remote HEAD (tracked files live inside the encrypted packfile, not as individual bucket objects). Sizes are the encrypted sizes, and the timestamp is when each file last changed. No passphrase is required.
 
 ### rm
 

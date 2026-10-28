@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/config"
-	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/crypto"
 	"github.com/charliek/envsecrets/internal/domain"
-	limitedio "github.com/charliek/envsecrets/internal/io"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/charliek/envsecrets/internal/ui"
@@ -118,55 +115,37 @@ func runRotate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Verify current passphrase can decrypt at least one file before proceeding
+	// Check every repository decrypts with one of the two passphrases before
+	// changing any of them. Repositories already on the new passphrase (from an
+	// earlier, interrupted rotation) are skipped so a retry can finish the job.
 	out.Println()
-	out.Printf("Verifying current passphrase...")
-	verified := false
-	var lastDownloadErr error
-	for _, obj := range objects {
-		if strings.HasSuffix(obj, ".age") && !strings.HasSuffix(obj, "/HEAD") {
-			// Try to download and decrypt one file using closure for proper resource cleanup
-			data, downloadErr := func() ([]byte, error) {
-				r, err := store.Download(ctx, obj)
-				if err != nil {
-					return nil, fmt.Errorf("download failed: %w", err)
-				}
-				defer r.Close()
-				data, err := limitedio.LimitedReadAll(r, constants.MaxEncryptedFileSize, "encrypted file")
-				if err != nil {
-					return nil, fmt.Errorf("read failed: %w", err)
-				}
-				return data, nil
-			}()
-			if downloadErr != nil {
-				lastDownloadErr = downloadErr
-				out.Verbose("Warning: failed to read %s: %v", obj, downloadErr)
-				continue
-			}
-			_, err = currentEnc.Decrypt(data)
-			if err != nil {
-				out.Println(" FAILED")
-				return fmt.Errorf("current passphrase cannot decrypt existing files: %w", err)
-			}
-			verified = true
-			break
-		}
+	out.Printf("Verifying passphrases...")
+	plan, err := planRotation(ctx, store, repoList, currentEnc, newEnc)
+	if err != nil {
+		out.Println(" FAILED")
+		return err
 	}
-	if !verified && len(objects) > 0 {
-		// There are objects but none are .age files or all downloads failed
-		if lastDownloadErr != nil {
-			out.Println(" FAILED")
-			return fmt.Errorf("failed to verify passphrase - could not download any files: %w", lastDownloadErr)
-		}
-		out.Println(" OK (no encrypted files found)")
-	} else if verified {
-		out.Println(" OK")
+	out.Println(" OK")
+
+	for _, repoPath := range plan.Invalid {
+		out.Warn("Skipping invalid repo path: %s", repoPath)
+	}
+	for _, repoPath := range plan.AlreadyRotated {
+		out.Printf("  %s already uses the new passphrase\n", repoPath)
+	}
+
+	if len(plan.ToRotate) == 0 {
+		out.Println()
+		out.Success("All repositories already use the new passphrase.")
+		out.Println()
+		out.Println("IMPORTANT: Update your passphrase configuration to use the new passphrase.")
+		return nil
 	}
 
 	// Confirm
 	prompt := ui.NewPrompt()
 	confirmed, err := prompt.ConfirmDanger(
-		fmt.Sprintf("This will re-encrypt %d repositories with the new passphrase.", len(repos)))
+		fmt.Sprintf("This will re-encrypt %d repositories with the new passphrase.", len(plan.ToRotate)))
 	if err != nil {
 		return err
 	}
@@ -176,17 +155,20 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Process each repo
-	for _, repoPath := range repoList {
+	failed := 0
+	for _, repoPath := range plan.ToRotate {
 		out.Printf("Processing %s...\n", repoPath)
 
 		repoInfo, err := project.ParseRepoString(repoPath)
 		if err != nil {
 			out.Warn("Skipping invalid repo path: %s", repoPath)
+			failed++
 			continue
 		}
 
 		if err := rotateRepo(ctx, store, repoInfo, currentEnc, newEnc); err != nil {
 			out.Error("Failed to rotate %s: %v", repoPath, err)
+			failed++
 			continue
 		}
 
@@ -194,11 +176,52 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	out.Println()
+	if failed > 0 {
+		out.Warn("%d of %d repositories still use the current passphrase; the rest now use the new one.",
+			failed, len(plan.ToRotate)+len(plan.AlreadyRotated))
+		out.Warn("Re-run rotate-passphrase with the same current and new passphrases to finish.")
+		return fmt.Errorf("passphrase rotation failed for %d repositories", failed)
+	}
 	out.Success("Passphrase rotation complete!")
 	out.Println()
 	out.Println("IMPORTANT: Update your passphrase configuration to use the new passphrase.")
 
 	return nil
+}
+
+// rotationPlan sorts repositories by which passphrase currently decrypts them
+type rotationPlan struct {
+	ToRotate       []string // Decrypt with the current passphrase
+	AlreadyRotated []string // Decrypt with the new passphrase
+	Invalid        []string // Unparseable repo paths
+}
+
+// planRotation verifies every repository against the current passphrase, then
+// the new one, without modifying anything. It fails if any repository decrypts
+// with neither, so a mistyped passphrase aborts before any re-encryption.
+func planRotation(ctx context.Context, store storage.Storage, repoList []string, currentEnc, newEnc crypto.Encrypter) (*rotationPlan, error) {
+	plan := &rotationPlan{}
+	for _, repoPath := range repoList {
+		repoInfo, err := project.ParseRepoString(repoPath)
+		if err != nil {
+			plan.Invalid = append(plan.Invalid, repoPath)
+			continue
+		}
+
+		current := verifyRepo(ctx, store, repoInfo, currentEnc)
+		if current.Error == "" {
+			plan.ToRotate = append(plan.ToRotate, repoPath)
+			continue
+		}
+
+		if verifyRepo(ctx, store, repoInfo, newEnc).Error == "" {
+			plan.AlreadyRotated = append(plan.AlreadyRotated, repoPath)
+			continue
+		}
+
+		return nil, fmt.Errorf("neither the current nor the new passphrase can decrypt %s: %s", repoPath, current.Error)
+	}
+	return plan, nil
 }
 
 func rotateRepo(ctx context.Context, store storage.Storage, repoInfo *domain.RepoInfo, oldEnc, newEnc crypto.Encrypter) error {

@@ -71,7 +71,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	if deleteDryRun {
-		out.Printf("Would delete %s (%d files)\n", repoPath, len(objects))
+		out.Printf("Would delete %s (%d storage objects)\n", repoPath, len(objects))
 		return nil
 	}
 
@@ -79,7 +79,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	if ui.CanPrompt() {
 		prompt := ui.NewPrompt()
 		confirmed, err := prompt.ConfirmDanger(
-			fmt.Sprintf("This will permanently delete %s and all its history (%d files).",
+			fmt.Sprintf("This will permanently delete %s and all its history (%d storage objects).",
 				repoPath, len(objects)))
 		if err != nil {
 			return err
@@ -105,7 +105,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete repository: %w", err)
 	}
 
-	out.Printf("Deleted %s (%d files)\n", repoPath, len(objects))
+	out.Printf("Deleted %s (%d storage objects)\n", repoPath, len(objects))
 
 	return nil
 }

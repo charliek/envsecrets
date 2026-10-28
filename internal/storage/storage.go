@@ -3,7 +3,6 @@ package storage
 import (
 	"context"
 	"io"
-	"time"
 )
 
 // Storage defines the interface for cloud storage operations
@@ -17,9 +16,6 @@ type Storage interface {
 	// List lists all objects with the given prefix
 	List(ctx context.Context, prefix string) ([]string, error)
 
-	// ListWithMetadata lists objects with extended metadata (name, size, updated)
-	ListWithMetadata(ctx context.Context, prefix string) ([]ObjectInfo, error)
-
 	// Delete deletes the object at the given path
 	Delete(ctx context.Context, path string) error
 
@@ -28,14 +24,4 @@ type Storage interface {
 
 	// Close releases any resources held by the storage client
 	Close() error
-}
-
-// ObjectInfo represents a storage object with extended metadata
-type ObjectInfo struct {
-	// Name is the full path to the object in storage
-	Name string
-	// Size is the size of the object in bytes
-	Size int64
-	// Updated is the last modification time
-	Updated time.Time
 }
