@@ -4,14 +4,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/config"
-	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/crypto"
 	"github.com/charliek/envsecrets/internal/domain"
-	limitedio "github.com/charliek/envsecrets/internal/io"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
 	"github.com/charliek/envsecrets/internal/ui"
@@ -104,6 +101,23 @@ func runRotate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Verify the current passphrase decrypts every repository before changing
+	// any of them. Tracked files live inside each repo's encrypted packfile, so
+	// this syncs each cache rather than looking for individual bucket objects.
+	out.Println()
+	out.Printf("Verifying current passphrase...")
+	for _, repoPath := range repoList {
+		repoInfo, err := project.ParseRepoString(repoPath)
+		if err != nil {
+			continue // Reported and skipped during rotation
+		}
+		if result := verifyRepo(ctx, store, repoInfo, currentEnc); result.Error != "" {
+			out.Println(" FAILED")
+			return fmt.Errorf("current passphrase cannot decrypt %s: %s", repoPath, result.Error)
+		}
+	}
+	out.Println(" OK")
+
 	// Get new passphrase
 	out.Println()
 	out.Println("Now, enter a new passphrase...")
@@ -116,51 +130,6 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	newEnc, err := crypto.NewAgeEncrypter(newPassphrase)
 	if err != nil {
 		return err
-	}
-
-	// Verify current passphrase can decrypt at least one file before proceeding
-	out.Println()
-	out.Printf("Verifying current passphrase...")
-	verified := false
-	var lastDownloadErr error
-	for _, obj := range objects {
-		if strings.HasSuffix(obj, ".age") && !strings.HasSuffix(obj, "/HEAD") {
-			// Try to download and decrypt one file using closure for proper resource cleanup
-			data, downloadErr := func() ([]byte, error) {
-				r, err := store.Download(ctx, obj)
-				if err != nil {
-					return nil, fmt.Errorf("download failed: %w", err)
-				}
-				defer r.Close()
-				data, err := limitedio.LimitedReadAll(r, constants.MaxEncryptedFileSize, "encrypted file")
-				if err != nil {
-					return nil, fmt.Errorf("read failed: %w", err)
-				}
-				return data, nil
-			}()
-			if downloadErr != nil {
-				lastDownloadErr = downloadErr
-				out.Verbose("Warning: failed to read %s: %v", obj, downloadErr)
-				continue
-			}
-			_, err = currentEnc.Decrypt(data)
-			if err != nil {
-				out.Println(" FAILED")
-				return fmt.Errorf("current passphrase cannot decrypt existing files: %w", err)
-			}
-			verified = true
-			break
-		}
-	}
-	if !verified && len(objects) > 0 {
-		// There are objects but none are .age files or all downloads failed
-		if lastDownloadErr != nil {
-			out.Println(" FAILED")
-			return fmt.Errorf("failed to verify passphrase - could not download any files: %w", lastDownloadErr)
-		}
-		out.Println(" OK (no encrypted files found)")
-	} else if verified {
-		out.Println(" OK")
 	}
 
 	// Confirm
@@ -176,17 +145,20 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Process each repo
+	failed := 0
 	for _, repoPath := range repoList {
 		out.Printf("Processing %s...\n", repoPath)
 
 		repoInfo, err := project.ParseRepoString(repoPath)
 		if err != nil {
 			out.Warn("Skipping invalid repo path: %s", repoPath)
+			failed++
 			continue
 		}
 
 		if err := rotateRepo(ctx, store, repoInfo, currentEnc, newEnc); err != nil {
 			out.Error("Failed to rotate %s: %v", repoPath, err)
+			failed++
 			continue
 		}
 
@@ -194,6 +166,11 @@ func runRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	out.Println()
+	if failed > 0 {
+		out.Warn("%d of %d repositories still use the current passphrase; the rest now use the new one.",
+			failed, len(repoList))
+		return fmt.Errorf("passphrase rotation failed for %d repositories", failed)
+	}
 	out.Success("Passphrase rotation complete!")
 	out.Println()
 	out.Println("IMPORTANT: Update your passphrase configuration to use the new passphrase.")

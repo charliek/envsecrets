@@ -3,9 +3,13 @@ package cli
 import (
 	"context"
 	"fmt"
+	"math"
+	"os"
+	"path/filepath"
 	"sort"
-	"strings"
+	"time"
 
+	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/charliek/envsecrets/internal/storage"
@@ -67,7 +71,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	}
 
 	// List files in specific repo
-	return listRepoFiles(ctx, store, out, args[0])
+	return listRepoFilesWithStorage(ctx, store, out, args[0])
 }
 
 func listRepos(ctx context.Context, store storage.Storage, out *ui.Output) error {
@@ -104,83 +108,95 @@ func listRepos(ctx context.Context, store storage.Storage, out *ui.Output) error
 	return nil
 }
 
-// listRepoFilesWithStorage lists files using the Storage interface
 func listRepoFilesWithStorage(ctx context.Context, store storage.Storage, out *ui.Output, repo string) error {
-	return listRepoFilesImpl(ctx, store, out, repo)
-}
-
-func listRepoFiles(ctx context.Context, store *storage.GCSStorage, out *ui.Output, repo string) error {
-	return listRepoFilesImpl(ctx, store, out, repo)
-}
-
-func listRepoFilesImpl(ctx context.Context, store storage.Storage, out *ui.Output, repo string) error {
-	prefix := repo + "/"
-
-	objects, err := store.ListWithMetadata(ctx, prefix)
+	repoInfo, err := project.ParseRepoString(repo)
 	if err != nil {
 		return err
 	}
+	c, err := cache.NewCache(repoInfo, store)
+	if err != nil {
+		return err
+	}
+	return listCacheFiles(ctx, c, out, repo)
+}
 
-	if len(objects) == 0 {
+// listCacheFiles lists the files in a repository's current remote HEAD.
+// Tracked files live inside the encrypted packfile rather than as individual
+// bucket objects, so the cache is synced from storage and read from there.
+func listCacheFiles(ctx context.Context, c *cache.Cache, out *ui.Output, repo string) error {
+	exists, err := c.ExistsRemote(ctx)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		out.Printf("No files found in %s\n", repo)
 		return nil
 	}
 
-	if out.IsJSON() {
-		type fileInfo struct {
-			Name    string `json:"name"`
-			Size    int64  `json:"size"`
-			Updated string `json:"updated"`
-		}
-		var files []fileInfo
-		for _, obj := range objects {
-			if isInternalStorageFile(obj.Name) {
-				continue
+	if err := c.SyncFromStorage(ctx); err != nil {
+		return err
+	}
+
+	files, err := c.ListTrackedFiles()
+	if err != nil {
+		return err
+	}
+	sort.Strings(files)
+
+	if len(files) == 0 {
+		out.Printf("No files found in %s\n", repo)
+		return nil
+	}
+
+	// Find when each file last changed by walking history newest-first
+	commits, err := c.Log(math.MaxInt, true)
+	if err != nil {
+		return err
+	}
+	lastChanged := make(map[string]time.Time)
+	for _, commit := range commits {
+		for _, f := range commit.Files {
+			if _, ok := lastChanged[f]; !ok {
+				lastChanged[f] = commit.Date
 			}
-			files = append(files, fileInfo{
-				Name:    strings.TrimPrefix(obj.Name, prefix),
-				Size:    obj.Size,
-				Updated: obj.Updated.Format("2006-01-02 15:04:05"),
-			})
 		}
-		return out.JSON(files)
+	}
+
+	type fileInfo struct {
+		Name    string `json:"name"`
+		Size    int64  `json:"size"`
+		Updated string `json:"updated"`
+	}
+	infos := make([]fileInfo, 0, len(files))
+	for _, f := range files {
+		stat, err := os.Stat(filepath.Join(c.Path(), f+constants.AgeExtension))
+		if err != nil {
+			return err
+		}
+		updated := ""
+		if t, ok := lastChanged[f]; ok {
+			updated = t.Local().Format("2006-01-02 15:04:05")
+		}
+		infos = append(infos, fileInfo{Name: f, Size: stat.Size(), Updated: updated})
+	}
+
+	if out.IsJSON() {
+		return out.JSON(infos)
+	}
+
+	nameWidth := 25
+	for _, info := range infos {
+		nameWidth = max(nameWidth, len(info.Name))
 	}
 
 	out.Printf("Files in %s:\n\n", repo)
-
-	// Count user files (exclude internal storage files)
-	fileCount := 0
-	for _, obj := range objects {
-		if !isInternalStorageFile(obj.Name) {
-			fileCount++
-		}
+	for _, info := range infos {
+		out.Printf("  %-*s %10s   %s\n", nameWidth, info.Name, formatBytes(info.Size), info.Updated)
 	}
-
-	for _, obj := range objects {
-		if isInternalStorageFile(obj.Name) {
-			continue
-		}
-		filename := strings.TrimPrefix(obj.Name, prefix)
-		out.Printf("  %-25s %10s   %s\n",
-			filename,
-			formatBytes(obj.Size),
-			obj.Updated.Format("2006-01-02 15:04:05"))
-	}
-
 	out.Println()
-	out.Printf("%d file(s)\n", fileCount)
+	out.Printf("%d file(s)\n", len(infos))
 
 	return nil
-}
-
-// isInternalStorageFile returns true if the object path is an internal
-// storage file (FORMAT, HEAD, objects.pack, refs) that should be hidden
-// from user-facing list output.
-func isInternalStorageFile(name string) bool {
-	return strings.HasSuffix(name, "/HEAD") ||
-		strings.HasSuffix(name, "/FORMAT") ||
-		strings.HasSuffix(name, "/objects.pack") ||
-		strings.HasSuffix(name, "/refs")
 }
 
 // formatBytes formats bytes in human-readable format
