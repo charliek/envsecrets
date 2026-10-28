@@ -137,10 +137,14 @@ this checkout successfully completed. `cache.Reset()` intentionally clears
 it — Reset implies the cache is no longer trusted, so the baseline must also
 be discarded.
 
-Older versions kept the marker inside the cache's `.git/`. The first checkout
-to read its baseline after upgrading adopts that legacy marker: it claims the
-file with an atomic rename, so exactly one checkout inherits it and every
-other checkout starts with no baseline (first pull).
+Older versions kept the marker inside the cache's `.git/`, and it doesn't
+record which checkout wrote it. A checkout with no baseline of its own adopts
+that legacy marker only if its working tree matches the marker's commit
+(`Syncer.readBaseline`), which identifies it as the checkout that synced it.
+It claims the file with an atomic rename, so only one checkout can adopt it;
+a non-matching checkout puts it back and starts with no baseline (first
+pull). Adopting it in a stale checkout would make old content look like
+local edits that `sync` would push over newer remote content.
 
 Push never deletes a file from remote unless the caller approved it:
 either blanket `PushOptions.AllowDeletes` (`push --allow-missing`/`--force`)

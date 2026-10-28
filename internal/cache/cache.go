@@ -651,25 +651,34 @@ func readMarker(path string) (string, time.Time) {
 // "no marker" as "never synced". Never hard-errors.
 func (c *Cache) ReadLastSynced() (string, time.Time, error) {
 	hash, mtime := readMarker(c.lastSyncedPath())
-	if hash == "" && c.checkoutBaseline != "" {
-		hash, mtime = c.adoptLegacyBaseline()
-	}
 	return hash, mtime, nil
 }
 
-// adoptLegacyBaseline moves the shared pre-upgrade marker to this checkout.
-// The legacy file is claimed with an atomic rename, so exactly one checkout
-// adopts it; every other checkout starts with no baseline (first pull).
-func (c *Cache) adoptLegacyBaseline() (string, time.Time) {
+// AdoptLegacyBaseline moves the shared pre-upgrade marker to this checkout,
+// but only if matches(hash) confirms this checkout's working tree is at that
+// commit. The marker doesn't say which checkout wrote it; adopting it in a
+// stale checkout would make old content look like local edits to push.
+//
+// The legacy file is claimed with an atomic rename so only one checkout
+// adopts it. If it doesn't match, it is put back for the checkout it belongs
+// to, and this one starts with no baseline (first pull).
+func (c *Cache) AdoptLegacyBaseline(matches func(hash string) bool) (string, time.Time) {
+	if c.checkoutBaseline == "" {
+		return "", time.Time{}
+	}
 	legacy := c.legacyLastSyncedPath()
 	claimed := fmt.Sprintf("%s.adopting-%d", legacy, os.Getpid())
 	if err := os.Rename(legacy, claimed); err != nil {
-		return "", time.Time{} // No legacy marker, or another checkout won
+		return "", time.Time{} // No legacy marker, or another checkout claimed it
 	}
-	defer os.Remove(claimed)
+	defer os.Remove(claimed) // No-op once renamed back
 
 	hash, mtime := readMarker(claimed)
 	if hash == "" {
+		return "", time.Time{}
+	}
+	if !matches(hash) {
+		_ = os.Rename(claimed, legacy)
 		return "", time.Time{}
 	}
 	if err := c.WriteLastSynced(hash); err != nil {

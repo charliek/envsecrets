@@ -14,7 +14,7 @@ import (
 func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult, error) {
 	// Read this machine's last-synced commit BEFORE any state changes. Used
 	// below to detect divergence from another machine's push.
-	lastSynced, _, _ := s.cache.ReadLastSynced()
+	lastSynced, _ := s.readBaseline()
 
 	// Sync from storage first to get full history and latest state
 	if err := s.syncBeforePush(ctx, opts.DryRun); err != nil {

@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/domain"
+	"github.com/charliek/envsecrets/internal/git"
 	"github.com/charliek/envsecrets/internal/project"
 	"github.com/stretchr/testify/require"
 )
@@ -240,4 +242,44 @@ func TestRevertPush_PublishesRollbackDeletionsOnRetry(t *testing.T) {
 	c := env.newMachine(t, []string{".env", ".env.local"})
 	c.pull()
 	require.NoFileExists(t, filepath.Join(c.projectDir, ".env.local"))
+}
+
+// writeLegacyBaseline simulates a pre-upgrade machine: the only baseline is
+// the shared marker in the cache, recording hash.
+func writeLegacyBaseline(t *testing.T, m *testMachine, hash string) {
+	t.Helper()
+	gitRepo, err := git.NewGoGitRepository(m.cache.Path())
+	require.NoError(t, err)
+	legacy := cache.NewCacheWithRepo(m.env.repoInfo, m.env.storage, gitRepo, m.cache.Path())
+	require.NoError(t, legacy.WriteLastSynced(hash))
+	require.NoError(t, os.RemoveAll(m.baselineDir()))
+}
+
+// After upgrading, a stale checkout must not adopt the legacy marker another
+// checkout wrote: its old content would look like local edits and sync would
+// push them over newer remote content.
+func TestLegacyBaseline_StaleCheckoutDoesNotAdopt(t *testing.T) {
+	env := newTestEnv()
+	a := env.newMachine(t, []string{".env"})
+	a.writeFile(".env", "X=1")
+	a.push()
+
+	// B is a second checkout sharing A's cache, holding the old content
+	b := a.newWorktree(t, "stale", ".env\n")
+	b.writeFile(".env", "X=1")
+
+	a.writeFile(".env", "X=2")
+	h2 := a.push().CommitHash
+	writeLegacyBaseline(t, a, h2)
+	require.NoError(t, os.RemoveAll(b.baselineDir()))
+
+	// B runs first: its tree is at the old commit, so no adoption
+	require.Equal(t, domain.SyncActionFirstPull, b.status().Action)
+	_, err := b.syncer.Push(context.Background(), PushOptions{Message: "stale"})
+	require.ErrorIs(t, err, domain.ErrDivergedHistory, "stale checkout must not push over remote")
+
+	// A's tree matches h2, so A adopts it
+	s := a.status()
+	require.Equal(t, domain.SyncActionInSync, s.Action)
+	require.Equal(t, h2, s.LastSynced)
 }

@@ -623,34 +623,64 @@ func TestCache_CheckoutBaseline_SeparateFromLegacy(t *testing.T) {
 
 // The shared pre-upgrade marker is adopted by exactly one checkout, keeping
 // its original sync time; other checkouts start with no baseline.
-func TestCache_CheckoutBaseline_AdoptsLegacyOnce(t *testing.T) {
+func TestCache_AdoptLegacyBaseline_Once(t *testing.T) {
 	dir := t.TempDir()
 	hash := strings.Repeat("c", 40)
 	require.NoError(t, newBaselineTestCache(t, dir).WriteLastSynced(hash)) // legacy location
 	legacy := filepath.Join(dir, ".git", LastSyncedFileName)
 	synced := time.Now().Add(-48 * time.Hour).Truncate(time.Second)
 	require.NoError(t, os.Chtimes(legacy, synced, synced))
+	matches := func(string) bool { return true }
 
 	first := newBaselineTestCache(t, dir)
 	firstPath := filepath.Join(t.TempDir(), "last-synced")
 	first.UseCheckoutBaseline(firstPath)
-	got, mtime, err := first.ReadLastSynced()
-	require.NoError(t, err)
+	got, mtime := first.AdoptLegacyBaseline(matches)
 	require.Equal(t, hash, got)
 	require.True(t, mtime.Equal(synced), "adopted marker keeps the original sync time")
-	require.FileExists(t, firstPath)
 	require.NoFileExists(t, legacy)
+	got, _, err := first.ReadLastSynced()
+	require.NoError(t, err)
+	require.Equal(t, hash, got)
 
 	second := newBaselineTestCache(t, dir)
 	second.UseCheckoutBaseline(filepath.Join(t.TempDir(), "last-synced"))
-	got, _, err = second.ReadLastSynced()
-	require.NoError(t, err)
+	got, _ = second.AdoptLegacyBaseline(matches)
 	require.Empty(t, got, "a second checkout must not inherit the adopted baseline")
+}
 
-	// The adopting checkout keeps reading its own marker
-	got, _, err = first.ReadLastSynced()
-	require.NoError(t, err)
+// A checkout whose tree doesn't match the legacy commit must not adopt it,
+// and must leave it for the checkout it belongs to.
+func TestCache_AdoptLegacyBaseline_RejectedIsKept(t *testing.T) {
+	dir := t.TempDir()
+	hash := strings.Repeat("e", 40)
+	require.NoError(t, newBaselineTestCache(t, dir).WriteLastSynced(hash))
+	legacy := filepath.Join(dir, ".git", LastSyncedFileName)
+
+	stale := newBaselineTestCache(t, dir)
+	stalePath := filepath.Join(t.TempDir(), "last-synced")
+	stale.UseCheckoutBaseline(stalePath)
+	got, _ := stale.AdoptLegacyBaseline(func(string) bool { return false })
+	require.Empty(t, got)
+	require.NoFileExists(t, stalePath)
+	require.FileExists(t, legacy, "rejected legacy marker must be put back")
+
+	owner := newBaselineTestCache(t, dir)
+	owner.UseCheckoutBaseline(filepath.Join(t.TempDir(), "last-synced"))
+	got, _ = owner.AdoptLegacyBaseline(func(h string) bool { return h == hash })
 	require.Equal(t, hash, got)
+}
+
+func TestCache_ReadLastSynced_DoesNotAdoptLegacy(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, newBaselineTestCache(t, dir).WriteLastSynced(strings.Repeat("f", 40)))
+
+	c := newBaselineTestCache(t, dir)
+	c.UseCheckoutBaseline(filepath.Join(t.TempDir(), "last-synced"))
+	got, _, err := c.ReadLastSynced()
+	require.NoError(t, err)
+	require.Empty(t, got)
+	require.FileExists(t, filepath.Join(dir, ".git", LastSyncedFileName))
 }
 
 func TestCache_Reset_ClearsCheckoutBaseline(t *testing.T) {

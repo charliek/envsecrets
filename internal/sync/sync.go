@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"time"
 
 	"github.com/charliek/envsecrets/internal/cache"
 	"github.com/charliek/envsecrets/internal/crypto"
@@ -93,7 +94,7 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 	status := &domain.SyncStatus{}
 
 	// Read last-synced marker first (works even with no remote)
-	lastSynced, lastSyncedAt, _ := s.cache.ReadLastSynced()
+	lastSynced, lastSyncedAt := s.readBaseline()
 	status.LastSynced = lastSynced
 	status.LastSyncedAt = lastSyncedAt
 
@@ -205,6 +206,40 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 }
 
 // classifyFiles fills in LocalChanges/RemoteChanges/Conflicts on status.
+// readBaseline returns this checkout's last-synced commit. With no marker of
+// its own, it adopts the legacy shared marker if the working tree matches
+// that commit, i.e. this is the checkout that last synced it.
+func (s *Syncer) readBaseline() (string, time.Time) {
+	if hash, mtime, _ := s.cache.ReadLastSynced(); hash != "" {
+		return hash, mtime
+	}
+	return s.cache.AdoptLegacyBaseline(s.treeMatchesRef)
+}
+
+// treeMatchesRef reports whether every tracked file in the working tree has
+// the same content (and existence) as at ref. Any read or decrypt failure
+// counts as no match.
+func (s *Syncer) treeMatchesRef(ref string) bool {
+	files, err := s.discovery.EnvFiles()
+	if err != nil || len(files) == 0 {
+		return false
+	}
+	for _, f := range files {
+		base, baseExists, err := s.readCacheAtRef(f, ref)
+		if err != nil {
+			return false
+		}
+		local, localExists, err := s.readWorkingTree(f)
+		if err != nil {
+			return false
+		}
+		if !sameContent(base, baseExists, local, localExists) {
+			return false
+		}
+	}
+	return true
+}
+
 // FilesAbsentAtRef returns the tracked files that do not exist at ref. A
 // rollback to ref deletes these, whether or not they are still present
 // locally (e.g. a retry after an earlier rollback push failed).

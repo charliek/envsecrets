@@ -69,7 +69,7 @@ func (s *Syncer) Pull(ctx context.Context, opts PullOptions) (*domain.PullResult
 	// pessimistic behavior: any working-tree disagreement is treated as
 	// a conflict. That's correct because we genuinely cannot tell whether
 	// a difference is a local edit or just stale content.
-	lastSynced, _, _ := s.cache.ReadLastSynced()
+	lastSynced, _ := s.readBaseline()
 
 	// With no tracked file present locally, the baseline would classify every
 	// file as a local deletion and keep it deleted. Restore instead: without a
