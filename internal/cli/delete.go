@@ -105,7 +105,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to delete repository: %w", err)
 	}
 
-	out.Printf("Deleted %s (%d files)\n", repoPath, len(objects))
+	out.Printf("Deleted %s (%d storage objects)\n", repoPath, len(objects))
 
 	return nil
 }

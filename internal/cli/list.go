@@ -129,8 +129,7 @@ func listCacheFiles(ctx context.Context, c *cache.Cache, out *ui.Output, repo st
 		return err
 	}
 	if !exists {
-		out.Printf("No files found in %s\n", repo)
-		return nil
+		return printNoFiles(out, repo)
 	}
 
 	if err := c.SyncFromStorage(ctx); err != nil {
@@ -144,8 +143,7 @@ func listCacheFiles(ctx context.Context, c *cache.Cache, out *ui.Output, repo st
 	sort.Strings(files)
 
 	if len(files) == 0 {
-		out.Printf("No files found in %s\n", repo)
-		return nil
+		return printNoFiles(out, repo)
 	}
 
 	// Find when each file last changed by walking history newest-first
@@ -196,6 +194,15 @@ func listCacheFiles(ctx context.Context, c *cache.Cache, out *ui.Output, repo st
 	out.Println()
 	out.Printf("%d file(s)\n", len(infos))
 
+	return nil
+}
+
+// printNoFiles reports an empty listing, as an empty array in JSON mode
+func printNoFiles(out *ui.Output, repo string) error {
+	if out.IsJSON() {
+		return out.JSON([]struct{}{})
+	}
+	out.Printf("No files found in %s\n", repo)
 	return nil
 }
 

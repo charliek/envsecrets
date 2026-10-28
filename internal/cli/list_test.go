@@ -97,3 +97,14 @@ func TestListCacheFiles_MissingRepo(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, stdout.String(), "No files found in owner/missing")
 }
+
+func TestListCacheFiles_MissingRepoJSON(t *testing.T) {
+	store := storage.NewMockStorage()
+	repoInfo := &domain.RepoInfo{Owner: "owner", Name: "missing"}
+
+	var stdout bytes.Buffer
+	out := ui.NewOutputWithWriters(&stdout, &bytes.Buffer{}, false, true)
+	err := listCacheFiles(context.Background(), newTestCache(t, repoInfo, store), out, "owner/missing")
+	require.NoError(t, err)
+	require.JSONEq(t, "[]", stdout.String())
+}
