@@ -29,7 +29,7 @@ import (
 // The cache is shared by every checkout of a repo on this machine, but the
 // baseline describes one working tree. When a checkout baseline path is set
 // (see UseCheckoutBaseline), the marker lives there instead and this legacy
-// file is only read once, to migrate it.
+// file is only read to migrate it (see AdoptLegacyBaseline).
 const LastSyncedFileName = ".envsecrets-last-synced"
 
 // Cache manages the local cache of encrypted environment files
