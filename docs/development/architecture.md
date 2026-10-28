@@ -106,9 +106,9 @@ cmd/envsecrets
 
 1. Read `LAST_SYNCED` baseline + sync from GCS (so cache reflects remote)
 2. Run the same 3-way classification as pull, producing per-file `LocalChanges` / `RemoteChanges` / `Conflicts` slices
-3. Map to a `SyncAction`: `in_sync` / `push` / `pull` / `pull_then_push` / `reconcile` / `first_push_init` / `first_pull` / `nothing_tracked`
+3. Map to a `SyncAction`: `in_sync` / `push` / `pull` / `pull_then_push` / `reconcile` / `first_push_init` / `first_pull` / `restore` / `nothing_tracked`. `restore` is chosen before classification when none of the tracked files exist locally but remote has them, so a wiped working tree is restored rather than pushed as deletions
 4. `status` renders the action plus provenance (remote HEAD's author/timestamp, this machine's last-synced commit + age) for the user
-5. `sync` executes the action automatically — push, pull, or pull-then-push — and refuses with exit 16 (`ExitActionRequired`) on `reconcile` or `first_push_init` (initialization is intentionally manual)
+5. `sync` executes the action automatically — push, pull, or pull-then-push — and refuses with exit 16 (`ExitActionRequired`) on `reconcile` or `first_push_init` (initialization is intentionally manual), or when its push would delete files from remote
 
 ## Cache Structure
 
@@ -119,7 +119,7 @@ cmd/envsecrets
     └── {owner}/
         └── {repo}/
             ├── .git/                              # Full git history (restored from packfile)
-            │   └── .envsecrets-last-synced        # Per-machine baseline marker; never uploaded
+            │   └── .envsecrets-last-synced        # Legacy baseline marker; adopted by one checkout, then removed
             ├── .env.age                           # Encrypted files (working tree, populated by checkout)
             └── .env.local.age
 ```
@@ -127,12 +127,25 @@ cmd/envsecrets
 The cache is a git repository containing only encrypted files. Full git history
 is synced between machines via packfiles stored in GCS.
 
-The `LAST_SYNCED` marker lives **inside** `.git/` so go-git's force-checkout
-during `pull --ref` cannot wipe it as an "untracked" file. It contains a
-single 40-char hex commit hash recording the most recent `push` or full-HEAD
-`pull` this machine successfully completed. `cache.Reset()` (which removes
-the entire cache directory) intentionally clears it — Reset implies the
-cache is no longer trusted, so the baseline must also be discarded.
+The `LAST_SYNCED` baseline describes one working tree, but the cache is
+shared by every clone and worktree of a repo on the machine. So it lives in
+the project checkout's git directory, at
+`<git dir>/envsecrets/{owner}/{repo}/last-synced` (`Discovery.SyncBaselinePath`;
+a worktree's git dir is `.git/worktrees/<name>/`). It contains a single
+40-char hex commit hash recording the most recent `push` or full-HEAD `pull`
+this checkout successfully completed. `cache.Reset()` intentionally clears
+it — Reset implies the cache is no longer trusted, so the baseline must also
+be discarded.
+
+Older versions kept the marker inside the cache's `.git/`. The first checkout
+to read its baseline after upgrading adopts that legacy marker: it claims the
+file with an atomic rename, so exactly one checkout inherits it and every
+other checkout starts with no baseline (first pull).
+
+Push never deletes files from remote unless the caller sets
+`PushOptions.AllowDeletes` (the `push` CLI after confirmation, `rm`);
+otherwise it returns `*domain.PendingDeletionsError` before touching the
+cache.
 
 ## GCS Storage Layout
 

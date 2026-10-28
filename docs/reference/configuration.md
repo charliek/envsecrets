@@ -126,5 +126,7 @@ Encrypted files are cached at `~/.envsecrets/cache/{owner}/{repo}/`.
 The cache contains:
 
 - `.git/` - Git repository metadata
-- `.git/.envsecrets-last-synced` - Per-machine baseline marker (40-char hex commit hash). Records the commit this machine last successfully pushed or pulled to. Drives the 3-way diff that powers `status` recommendations and the `push` divergence safety check. **Never uploaded to GCS** — strictly per-machine state. Cleared by `cache.Reset()` (correct: a reset cache has no trustworthy baseline).
+- `.git/.envsecrets-last-synced` - Legacy baseline marker from older versions. The first checkout to run a newer version adopts it (see below) and it is removed.
 - `*.age` - Encrypted environment files
+
+Each project checkout keeps its own sync baseline at `<git dir>/envsecrets/{owner}/{repo}/last-synced` (for a normal clone, `.git/envsecrets/...`; for a `git worktree`, inside `.git/worktrees/<name>/`). It is a 40-char hex commit hash recording the commit this checkout last successfully pushed or pulled to, and drives the 3-way diff behind `status` recommendations and the `push` divergence safety check. **Never uploaded to GCS.** Keeping it per checkout matters because the cache is shared by every clone and worktree of a repo on the machine. `cache.Reset()` clears it (a reset cache has no trustworthy baseline).

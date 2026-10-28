@@ -82,7 +82,7 @@ func runSync(cmd *cobra.Command, args []string) error {
 		out.Println("Remote not initialized. Run: envsecrets push")
 		return domain.NewExitCodeError(domain.ErrActionRequired, exitCodeForActionRequired())
 
-	case domain.SyncActionFirstPull, domain.SyncActionPull:
+	case domain.SyncActionFirstPull, domain.SyncActionPull, domain.SyncActionRestore:
 		return runSyncPull(ctx, syncer, status, out)
 
 	case domain.SyncActionPush:
@@ -137,13 +137,16 @@ func runSync(cmd *cobra.Command, args []string) error {
 }
 
 func runSyncPull(ctx context.Context, syncer *sync.Syncer, status *domain.SyncStatus, out *ui.Output) error {
-	if status.Action == domain.SyncActionFirstPull {
+	switch status.Action {
+	case domain.SyncActionFirstPull:
 		// FirstPull returns from GetSyncStatus before per-file
 		// classification runs, so RemoteChanges is empty even though
 		// pull may write/update many files. Avoid misleading "0 remote
 		// change(s)" messaging in that case.
-		out.Println("Pulling remote state (first sync on this machine)...")
-	} else {
+		out.Println("Pulling remote state (first sync for this checkout)...")
+	case domain.SyncActionRestore:
+		out.Printf("Restoring %d missing file(s) from remote...\n", len(status.Missing))
+	default:
 		out.Printf("Pulling %d remote change(s)...\n", len(status.RemoteChanges))
 	}
 	opts := sync.PullOptions{}
@@ -201,6 +204,15 @@ func runSyncPush(ctx context.Context, syncer *sync.Syncer, status *domain.SyncSt
 			out.Println("  nothing to push (already up to date)")
 			return nil
 		}
+		var pending *domain.PendingDeletionsError
+		if errors.As(err, &pending) {
+			// sync never publishes deletions on its own; a missing file is
+			// far more often an accident than an intent to delete it remotely
+			out.Warn("push refused: it would delete %d file(s) from remote:", len(pending.Files))
+			printFileList(out, "  ", pending.Files)
+			out.Println("  To delete them from remote: envsecrets push   (asks to confirm)")
+			return domain.NewExitCodeError(err, exitCodeForActionRequired())
+		}
 		if errors.Is(err, domain.ErrDivergedHistory) {
 			// Diverged history has multiple causes; let the wrapped error
 			// describe the specific one rather than presuming overlap.
@@ -247,6 +259,8 @@ func describeSyncAction(out *ui.Output, s *domain.SyncStatus) {
 		out.Println("Would perform initial pull and materialize the entire remote state.")
 	case domain.SyncActionPull:
 		out.Printf("Would pull %d remote change(s).\n", len(s.RemoteChanges))
+	case domain.SyncActionRestore:
+		out.Printf("Would restore %d missing file(s) from remote.\n", len(s.Missing))
 	case domain.SyncActionPush:
 		out.Printf("Would push %d local change(s).\n", len(s.LocalChanges))
 	case domain.SyncActionPullThenPush:

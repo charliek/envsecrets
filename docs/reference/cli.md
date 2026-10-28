@@ -40,9 +40,12 @@ Displays repository name, bucket, remote HEAD with provenance (`pushed by user@m
 | **Run `envsecrets pull` then `envsecrets push`** | Both sides changed, but on different files (no overlap). |
 | **Reconcile** | The same file changed on two machines. Use `envsecrets diff <file>`, then `envsecrets pull` (interactive), then `envsecrets push`. |
 | **Run `envsecrets push` to initialize the remote** | Remote is empty; first push initializes it. |
-| **Run `envsecrets pull` first** | This machine has no sync baseline yet (fresh clone, post-reset, or upgraded from an older client). |
+| **Run `envsecrets pull` first** | This checkout has no sync baseline yet (fresh clone or worktree, or post-reset). |
+| **Run `envsecrets pull` to restore** | None of the tracked files exist locally (for example after `git clean -fdX`), but remote has them. Pull restores them; pushing would have deleted them from remote. |
 
 The recommendation is computed from a true 3-way comparison: working tree vs `LAST_SYNCED` baseline vs remote HEAD. Hash and content equality drive the decision; timestamps are used only for context.
+
+The baseline is kept per checkout (in that checkout's git directory), so each clone or `git worktree` of a repo on the same machine tracks its own sync state. A new worktree is told to pull first rather than inheriting another checkout's baseline.
 
 ### sync
 
@@ -61,10 +64,12 @@ envsecrets sync [flags]
 
 - **In sync** → exits 0 with "Already in sync."
 - **Push** → runs `envsecrets push`.
-- **Pull** → runs `envsecrets pull`.
+- **Pull** / **First pull** / **Restore** → runs `envsecrets pull`.
 - **Pull then push** → runs pull, then push.
 - **Reconcile** → prints reconciliation guidance and exits 16 (`ExitActionRequired`). Does NOT auto-resolve overlapping conflicts; resolve manually with `envsecrets pull` (interactive) then re-run `envsecrets sync` or `envsecrets push`.
 - **First push init** → prints "Remote not initialized; run `envsecrets push`" and exits 16. `sync` will not initialize a remote on its own.
+
+`sync` never deletes files from remote. If its push would delete any (a tracked file is missing locally, or a file was dropped from tracking), it lists them and exits 16; run `envsecrets push` to confirm the deletion.
 
 There is no `--force` on `sync`. To override the divergence safety check, run `envsecrets push --force` directly.
 
@@ -81,7 +86,11 @@ envsecrets push [flags]
 | `-m, --message` | Commit message |
 | `--dry-run` | Show what would be pushed without pushing |
 | `--force` | Override the divergence safety check |
-| `--allow-missing` | Allow push with missing tracked files (for non-interactive mode) |
+| `--allow-missing` | Allow push to delete missing or untracked files from remote (for non-interactive mode) |
+
+#### Deletion confirmation
+
+A push that would delete files from remote (a tracked file missing from the working tree, or a file no longer listed in `.envsecrets`) lists them and asks for confirmation before changing anything. In non-interactive mode it refuses with exit code 16 unless `--allow-missing` (or `--force`) is passed. `envsecrets rm` confirms on its own. If none of the tracked files exist locally, push refuses outright and points at `envsecrets pull` to restore them.
 
 #### Divergence safety
 

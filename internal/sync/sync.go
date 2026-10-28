@@ -46,6 +46,10 @@ type PushOptions struct {
 	DryRun bool
 	// Force pushes even if there are conflicts with remote
 	Force bool
+	// AllowDeletes lets the push delete files from remote: tracked files
+	// missing from the working tree, and files no longer tracked. Without
+	// it, Push returns a *domain.PendingDeletionsError instead.
+	AllowDeletes bool
 }
 
 // ConflictAction represents how to handle a file conflict
@@ -152,6 +156,17 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 		return status, nil
 	}
 
+	// No tracked file exists locally (e.g. `git clean -fdX`, or a checkout
+	// that never pulled). Against the baseline every file looks deleted, but
+	// publishing that would wipe remote, so recommend restoring instead.
+	if missing, err := s.missingLocallyOnly(files); err != nil {
+		return nil, err
+	} else if len(missing) > 0 {
+		status.Action = domain.SyncActionRestore
+		status.Missing = missing
+		return status, nil
+	}
+
 	// Three-way classification: each tracked file vs (base=LastSynced, remote=HEAD, local=working tree).
 	// ErrRefNotFound here means LAST_SYNCED points at a commit the cache
 	// no longer has (corrupt baseline). Treat that exactly like a missing
@@ -185,6 +200,29 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 }
 
 // classifyFiles fills in LocalChanges/RemoteChanges/Conflicts on status.
+// missingLocallyOnly returns the tracked files remote has when NONE of the
+// tracked files exist in the working tree, and nil otherwise.
+func (s *Syncer) missingLocallyOnly(files []string) ([]string, error) {
+	for _, f := range files {
+		if s.discovery.FileExists(f) {
+			return nil, nil
+		}
+	}
+	var missing []string
+	for _, f := range files {
+		_, err := s.cache.ReadEncrypted(f)
+		switch {
+		case err == nil:
+			missing = append(missing, f)
+		case errors.Is(err, domain.ErrFileNotFound), errors.Is(err, domain.ErrNotInitialized):
+			// Not on remote either; nothing to restore
+		default:
+			return nil, err
+		}
+	}
+	return missing, nil
+}
+
 func (s *Syncer) classifyFiles(files []string, baseRef string, status *domain.SyncStatus) error {
 	for _, f := range files {
 		baseBytes, baseExists, err := s.readCacheAtRef(f, baseRef)

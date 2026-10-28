@@ -31,7 +31,7 @@ func init() {
 	pushCmd.Flags().StringVarP(&pushMessage, "message", "m", "", "commit message")
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "show what would be pushed without pushing")
 	pushCmd.Flags().BoolVar(&pushForce, "force", false, "force push even with conflicts")
-	pushCmd.Flags().BoolVar(&pushAllowMissing, "allow-missing", false, "allow push with missing tracked files (for non-interactive mode)")
+	pushCmd.Flags().BoolVar(&pushAllowMissing, "allow-missing", false, "allow push to delete missing or untracked files from remote (for non-interactive mode)")
 }
 
 func runPush(cmd *cobra.Command, args []string) error {
@@ -68,24 +68,7 @@ func runPush(cmd *cobra.Command, args []string) error {
 
 		existing := len(files) - len(missing)
 		if existing == 0 {
-			return fmt.Errorf("no files to push")
-		}
-
-		// In dry-run mode, just warn and continue
-		if !pushDryRun && !pushForce && !pushAllowMissing {
-			if ui.CanPrompt() {
-				prompt := ui.NewPrompt()
-				ok, err := prompt.Confirm(fmt.Sprintf("Push %d of %d files anyway?", existing, len(files)), false)
-				if err != nil {
-					return err
-				}
-				if !ok {
-					out.Println("Aborted.")
-					return nil
-				}
-			} else {
-				return fmt.Errorf("push requires confirmation; use --allow-missing in non-interactive mode")
-			}
+			return fmt.Errorf("no files to push; to restore them run: envsecrets pull")
 		}
 	}
 
@@ -93,9 +76,10 @@ func runPush(cmd *cobra.Command, args []string) error {
 	syncer := sync.NewSyncer(pc.Discovery, pc.RepoInfo, pc.Storage, pc.Encrypter, pc.Cache)
 
 	opts := sync.PushOptions{
-		Message: pushMessage,
-		DryRun:  pushDryRun,
-		Force:   pushForce,
+		Message:      pushMessage,
+		DryRun:       pushDryRun,
+		Force:        pushForce,
+		AllowDeletes: pushForce || pushAllowMissing,
 	}
 
 	if pushDryRun {
@@ -103,6 +87,29 @@ func runPush(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := syncer.Push(ctx, opts)
+
+	// Deleting files from remote needs explicit confirmation
+	var pending *domain.PendingDeletionsError
+	if errors.As(err, &pending) {
+		out.Warn("This push would delete %d file(s) from remote:", len(pending.Files))
+		for _, f := range pending.Files {
+			out.Printf("  %s\n", f)
+		}
+		if !ui.CanPrompt() {
+			return fmt.Errorf("%w; use --allow-missing to confirm in non-interactive mode", err)
+		}
+		prompt := ui.NewPrompt()
+		ok, promptErr := prompt.Confirm("Delete them from remote?", false)
+		if promptErr != nil {
+			return promptErr
+		}
+		if !ok {
+			out.Println("Aborted.")
+			return nil
+		}
+		opts.AllowDeletes = true
+		result, err = syncer.Push(ctx, opts)
+	}
 	if err != nil {
 		if errors.Is(err, domain.ErrNothingToCommit) {
 			out.Println("Nothing to push - all files are up to date")

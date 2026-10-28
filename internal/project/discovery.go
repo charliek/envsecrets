@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/charliek/envsecrets/internal/constants"
 	"github.com/charliek/envsecrets/internal/domain"
@@ -58,6 +59,52 @@ func findGitRoot(startPath string) (string, error) {
 // ProjectRoot returns the project root directory
 func (d *Discovery) ProjectRoot() string {
 	return d.projectRoot
+}
+
+// GitDir returns this checkout's git directory. For a normal clone that is
+// <root>/.git; for a linked worktree (or submodule) .git is a file containing
+// "gitdir: <path>", which points at a directory unique to that checkout.
+func (d *Discovery) GitDir() (string, error) {
+	dotGit := filepath.Join(d.projectRoot, ".git")
+	info, err := os.Stat(dotGit)
+	if err != nil {
+		return "", domain.Errorf(domain.ErrNotInRepo, "failed to stat .git: %v", err)
+	}
+	if info.IsDir() {
+		return dotGit, nil
+	}
+
+	f, err := os.Open(dotGit)
+	if err != nil {
+		return "", domain.Errorf(domain.ErrGitError, "failed to open .git file: %v", err)
+	}
+	defer f.Close()
+	data, err := limitedio.LimitedReadAll(f, 4096, ".git file")
+	if err != nil {
+		return "", domain.Errorf(domain.ErrGitError, "failed to read .git file: %v", err)
+	}
+
+	line := strings.TrimSpace(strings.SplitN(string(data), "\n", 2)[0])
+	gitDir, ok := strings.CutPrefix(line, "gitdir:")
+	gitDir = strings.TrimSpace(gitDir)
+	if !ok || gitDir == "" {
+		return "", domain.Errorf(domain.ErrGitError, "unrecognized .git file in %s", d.projectRoot)
+	}
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(d.projectRoot, gitDir)
+	}
+	return filepath.Clean(gitDir), nil
+}
+
+// SyncBaselinePath returns where this checkout records its last-synced commit
+// for the given envsecrets repository: <git dir>/envsecrets/<owner>/<repo>/last-synced.
+// Keyed by repo as well as checkout so --repo overrides don't share a baseline.
+func (d *Discovery) SyncBaselinePath(repoInfo *domain.RepoInfo) (string, error) {
+	gitDir, err := d.GitDir()
+	if err != nil {
+		return "", err
+	}
+	return pathutil.SecureJoin(gitDir, filepath.Join("envsecrets", repoInfo.Owner, repoInfo.Name, "last-synced"))
 }
 
 // RepoInfo returns the repository information

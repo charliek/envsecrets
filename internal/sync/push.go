@@ -48,6 +48,18 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		files = nil // No tracked files — orphan cleanup will handle removals
 	}
 
+	// Refuse to delete anything from remote unless the caller opted in.
+	// Checked before the cache is touched so a refusal leaves no partial state.
+	if !opts.AllowDeletes && !opts.DryRun {
+		deletions, err := s.pendingDeletions(files)
+		if err != nil {
+			return nil, err
+		}
+		if len(deletions) > 0 {
+			return nil, &domain.PendingDeletionsError{Files: deletions}
+		}
+	}
+
 	result := &domain.PushResult{}
 
 	// Process each file
@@ -184,6 +196,33 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 	}
 
 	return result, nil
+}
+
+// pendingDeletions returns the files a push would delete from remote: tracked
+// files missing from the working tree, then cached files no longer tracked.
+func (s *Syncer) pendingDeletions(files []string) ([]string, error) {
+	var deletions []string
+	trackedSet := make(map[string]bool, len(files))
+	for _, file := range files {
+		trackedSet[file] = true
+		if s.discovery.FileExists(file) {
+			continue
+		}
+		if _, err := s.cache.ReadEncrypted(file); err == nil {
+			deletions = append(deletions, file)
+		}
+	}
+
+	cachedFiles, err := s.cache.ListTrackedFiles()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list cached files: %w", err)
+	}
+	for _, cached := range cachedFiles {
+		if !trackedSet[cached] {
+			deletions = append(deletions, cached)
+		}
+	}
+	return deletions, nil
 }
 
 // checkPushDivergence implements the multi-machine safety check described in

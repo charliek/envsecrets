@@ -19,13 +19,17 @@ import (
 	"github.com/charliek/envsecrets/internal/storage"
 )
 
-// LastSyncedFileName is the per-machine marker recording the commit hash this
-// machine last successfully pushed or pulled to. Plain text, single line of
-// 40 hex chars. Lives INSIDE .git/ so go-git's force-checkout (used by pull's
-// historical-ref path) can't wipe it as an "untracked" file. SyncToStorage
-// only uploads packed git objects and refs — never the contents of .git/
-// itself — so this stays per-machine and never leaks to remote storage.
-// Reset removes baseDir entirely, which intentionally clears this marker.
+// LastSyncedFileName is the legacy per-machine marker recording the commit
+// hash this machine last successfully pushed or pulled to. Plain text, single
+// line of 40 hex chars. Lives INSIDE the cache's .git/ so go-git's
+// force-checkout (used by pull's historical-ref path) can't wipe it as an
+// "untracked" file. SyncToStorage only uploads packed git objects and refs —
+// never the contents of .git/ itself — so this never leaks to remote storage.
+//
+// The cache is shared by every checkout of a repo on this machine, but the
+// baseline describes one working tree. When a checkout baseline path is set
+// (see UseCheckoutBaseline), the marker lives there instead and this legacy
+// file is only read once, to migrate it.
 const LastSyncedFileName = ".envsecrets-last-synced"
 
 // Cache manages the local cache of encrypted environment files
@@ -34,6 +38,10 @@ type Cache struct {
 	storage  storage.Storage
 	repoInfo *domain.RepoInfo
 	repo     git.Repository
+
+	// checkoutBaseline, when set, is where this checkout's LAST_SYNCED
+	// marker lives. Empty means the legacy shared marker in the cache.
+	checkoutBaseline string
 }
 
 // NewCache creates a new cache for the given repository
@@ -597,11 +605,44 @@ func (c *Cache) Validate() CacheHealth {
 	return health
 }
 
-// lastSyncedPath returns the absolute path to this cache's LAST_SYNCED file.
-// Stored inside .git/ so worktree operations (e.g. go-git's force-checkout
-// during pull --ref) leave it alone.
-func (c *Cache) lastSyncedPath() string {
+// UseCheckoutBaseline stores this cache's LAST_SYNCED marker at path (inside
+// the project checkout's git directory) instead of the shared cache. Each
+// clone or worktree of a repo then tracks its own baseline, so a new checkout
+// with no secret files is treated as never synced rather than as having
+// deleted them.
+func (c *Cache) UseCheckoutBaseline(path string) {
+	c.checkoutBaseline = path
+}
+
+// legacyLastSyncedPath returns the shared marker inside the cache's .git/.
+func (c *Cache) legacyLastSyncedPath() string {
 	return filepath.Join(c.baseDir, ".git", LastSyncedFileName)
+}
+
+// lastSyncedPath returns the absolute path to the active LAST_SYNCED file.
+func (c *Cache) lastSyncedPath() string {
+	if c.checkoutBaseline != "" {
+		return c.checkoutBaseline
+	}
+	return c.legacyLastSyncedPath()
+}
+
+// readMarker reads a LAST_SYNCED file, returning empty values if it is
+// missing, unreadable or malformed.
+func readMarker(path string) (string, time.Time) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", time.Time{}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", time.Time{}
+	}
+	hash := strings.TrimSpace(string(data))
+	if !isValidGitHash(hash) {
+		return "", time.Time{}
+	}
+	return hash, info.ModTime()
 }
 
 // ReadLastSynced returns the commit hash this machine last successfully synced
@@ -609,20 +650,36 @@ func (c *Cache) lastSyncedPath() string {
 // marker is missing, malformed, or otherwise unreadable — callers should treat
 // "no marker" as "never synced". Never hard-errors.
 func (c *Cache) ReadLastSynced() (string, time.Time, error) {
-	path := c.lastSyncedPath()
-	info, err := os.Stat(path)
-	if err != nil {
-		return "", time.Time{}, nil
+	hash, mtime := readMarker(c.lastSyncedPath())
+	if hash == "" && c.checkoutBaseline != "" {
+		hash, mtime = c.adoptLegacyBaseline()
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", time.Time{}, nil
+	return hash, mtime, nil
+}
+
+// adoptLegacyBaseline moves the shared pre-upgrade marker to this checkout.
+// The legacy file is claimed with an atomic rename, so exactly one checkout
+// adopts it; every other checkout starts with no baseline (first pull).
+func (c *Cache) adoptLegacyBaseline() (string, time.Time) {
+	legacy := c.legacyLastSyncedPath()
+	claimed := fmt.Sprintf("%s.adopting-%d", legacy, os.Getpid())
+	if err := os.Rename(legacy, claimed); err != nil {
+		return "", time.Time{} // No legacy marker, or another checkout won
 	}
-	hash := strings.TrimSpace(string(data))
-	if !isValidGitHash(hash) {
-		return "", time.Time{}, nil
+	defer os.Remove(claimed)
+
+	hash, mtime := readMarker(claimed)
+	if hash == "" {
+		return "", time.Time{}
 	}
-	return hash, info.ModTime(), nil
+	if err := c.WriteLastSynced(hash); err != nil {
+		// Put it back so a later run can retry the migration
+		_ = os.Rename(claimed, legacy)
+		return "", time.Time{}
+	}
+	// Keep the original sync time for status's staleness hint
+	_ = os.Chtimes(c.lastSyncedPath(), mtime, mtime)
+	return hash, mtime
 }
 
 // WriteLastSynced records the commit hash this machine just synced to.
@@ -633,7 +690,7 @@ func (c *Cache) WriteLastSynced(hash string) error {
 	}
 	path := c.lastSyncedPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return domain.Errorf(domain.ErrGitError, "failed to ensure cache dir: %v", err)
+		return domain.Errorf(domain.ErrGitError, "failed to ensure last-synced marker dir: %v", err)
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(hash+"\n"), 0600); err != nil {
@@ -651,6 +708,14 @@ func (c *Cache) Reset(ctx context.Context) error {
 	// Remove local cache directory
 	if err := os.RemoveAll(c.baseDir); err != nil {
 		return domain.Errorf(domain.ErrGitError, "failed to remove cache directory: %v", err)
+	}
+
+	// A reset cache has no trustworthy baseline; removing baseDir clears the
+	// legacy marker, so clear this checkout's marker too.
+	if c.checkoutBaseline != "" {
+		if err := os.Remove(c.checkoutBaseline); err != nil && !os.IsNotExist(err) {
+			return domain.Errorf(domain.ErrGitError, "failed to remove last-synced marker: %v", err)
+		}
 	}
 
 	// Check if remote exists

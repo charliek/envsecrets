@@ -102,6 +102,9 @@ const (
 	SyncActionFirstPull SyncAction = "first_pull"
 	// SyncActionNothingTracked means .envsecrets has no files listed
 	SyncActionNothingTracked SyncAction = "nothing_tracked"
+	// SyncActionRestore means none of the tracked files exist locally but
+	// remote has them; pull restores them rather than push deleting them
+	SyncActionRestore SyncAction = "restore"
 )
 
 // SyncStatus represents the sync status between local and remote
@@ -124,6 +127,9 @@ type SyncStatus struct {
 	RemoteChanges []string `json:"remote_changes,omitempty"`
 	// Conflicts lists files that changed locally AND remotely to different content
 	Conflicts []string `json:"conflicts,omitempty"`
+	// Missing lists tracked files absent from the working tree that remote
+	// has, set when Action is SyncActionRestore
+	Missing []string `json:"missing,omitempty"`
 	// Action is the recommended next action for the user
 	Action SyncAction `json:"action"`
 	// RemoteAuthor is the author of the remote HEAD commit, formatted as
