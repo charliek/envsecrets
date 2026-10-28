@@ -204,9 +204,12 @@ func TestPush_RefusesDeletionAddedAfterConfirmation(t *testing.T) {
 	require.Equal(t, domain.SyncActionInSync, b.status().Action)
 }
 
-// revert --push to a version that predates a tracked file deletes it locally;
-// publishing the rollback must be allowed for exactly those files.
-func TestRevertPush_PublishesRollbackDeletions(t *testing.T) {
+// revert --push to a version that predates a tracked file deletes it; the
+// rollback approves exactly the files absent at that ref. Approval must not
+// depend on this run's local deletions, or retrying after a failed upload
+// (file already gone locally) would be refused.
+func TestRevertPush_PublishesRollbackDeletionsOnRetry(t *testing.T) {
+	ctx := context.Background()
 	env := newTestEnv()
 	a := env.newMachine(t, []string{".env", ".env.local"})
 	a.writeFile(".env", "X=1")
@@ -214,15 +217,23 @@ func TestRevertPush_PublishesRollbackDeletions(t *testing.T) {
 	a.writeFile(".env.local", "L=1")
 	a.push()
 
-	pullRes, err := a.syncer.Pull(context.Background(), PullOptions{Ref: first, Force: true})
-	require.NoError(t, err)
-	require.Equal(t, []string{".env.local"}, pullRes.DeletedFiles)
+	revertPush := func() (*domain.PushResult, error) {
+		_, err := a.syncer.Pull(ctx, PullOptions{Ref: first, Force: true})
+		require.NoError(t, err)
+		absent, err := a.syncer.FilesAbsentAtRef(first)
+		require.NoError(t, err)
+		require.Equal(t, []string{".env.local"}, absent)
+		return a.syncer.Push(ctx, PushOptions{Message: "revert", Force: true, ConfirmedDeletions: absent})
+	}
 
-	pushRes, err := a.syncer.Push(context.Background(), PushOptions{
-		Message:            "revert",
-		Force:              true,
-		ConfirmedDeletions: pullRes.DeletedFiles,
-	})
+	// First attempt removes .env.local locally, then the upload fails
+	env.storage.UploadError = errors.New("upload failed")
+	_, err := revertPush()
+	require.Error(t, err)
+	env.storage.UploadError = nil
+	require.NoFileExists(t, filepath.Join(a.projectDir, ".env.local"))
+
+	pushRes, err := revertPush()
 	require.NoError(t, err)
 	require.Equal(t, 1, pushRes.FilesDeleted)
 

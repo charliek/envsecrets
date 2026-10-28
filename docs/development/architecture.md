@@ -142,10 +142,16 @@ to read its baseline after upgrading adopts that legacy marker: it claims the
 file with an atomic rename, so exactly one checkout inherits it and every
 other checkout starts with no baseline (first pull).
 
-Push never deletes files from remote unless the caller sets
-`PushOptions.AllowDeletes` (the `push` CLI after confirmation, `rm`);
-otherwise it returns `*domain.PendingDeletionsError` before touching the
-cache.
+Push never deletes a file from remote unless the caller approved it:
+either blanket `PushOptions.AllowDeletes` (`push --allow-missing`/`--force`)
+or by name in `PushOptions.ConfirmedDeletions` (the interactive `push`
+confirmation, `rm` for the file it removes, `revert --push` for the tracked
+files absent at the target ref). Otherwise it returns
+`*domain.PendingDeletionsError` listing every pending deletion, before
+touching the cache. Push reads all tracked files once up front and uses that
+snapshot for both approval and the commit, so a file deleted mid-push can't
+slip through, and the check runs after syncing from storage, so a file
+another machine published after confirmation is caught too.
 
 ## GCS Storage Layout
 

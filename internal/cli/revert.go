@@ -132,12 +132,17 @@ func runRevert(cmd *cobra.Command, args []string) error {
 			commitMessage = fmt.Sprintf("Revert to %s", refDisplay)
 		}
 
+		// Tracked files absent at ref are part of the confirmed rollback;
+		// anything else a push would delete still needs confirmation
+		rollbackDeletions, err := syncer.FilesAbsentAtRef(ref)
+		if err != nil {
+			return fmt.Errorf("failed to read %s: %w", refDisplay, err)
+		}
+
 		pushOpts := sync.PushOptions{
-			Message: commitMessage,
-			Force:   true,
-			// Files the revert removed are part of the confirmed rollback;
-			// anything else a push would delete still needs confirmation
-			ConfirmedDeletions: result.DeletedFiles,
+			Message:            commitMessage,
+			Force:              true,
+			ConfirmedDeletions: rollbackDeletions,
 		}
 
 		pushResult, err = syncer.Push(ctx, pushOpts)

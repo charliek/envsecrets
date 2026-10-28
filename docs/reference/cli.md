@@ -90,7 +90,7 @@ envsecrets push [flags]
 
 #### Deletion confirmation
 
-A push that would delete files from remote (a tracked file missing from the working tree, or a file no longer listed in `.envsecrets`) lists them and asks for confirmation before changing anything. In non-interactive mode it refuses with exit code 16 unless `--allow-missing` (or `--force`) is passed. `envsecrets rm` confirms on its own. If none of the tracked files exist locally, push refuses outright and points at `envsecrets pull` to restore them.
+A push that would delete files from remote (a tracked file missing from the working tree, or a file no longer listed in `.envsecrets`) lists them and asks for confirmation before changing anything. The confirmation covers exactly the listed files; if more turn up before the push completes (another machine pushed meanwhile), you are asked again. In non-interactive mode it refuses with exit code 16 unless `--allow-missing` (or `--force`) is passed. `envsecrets rm` confirms on its own. If none of the tracked files exist locally, push refuses outright and points at `envsecrets pull` to restore them.
 
 #### Divergence safety
 

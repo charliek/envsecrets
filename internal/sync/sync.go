@@ -205,6 +205,28 @@ func (s *Syncer) GetSyncStatus(ctx context.Context) (*domain.SyncStatus, error) 
 }
 
 // classifyFiles fills in LocalChanges/RemoteChanges/Conflicts on status.
+// FilesAbsentAtRef returns the tracked files that do not exist at ref. A
+// rollback to ref deletes these, whether or not they are still present
+// locally (e.g. a retry after an earlier rollback push failed).
+func (s *Syncer) FilesAbsentAtRef(ref string) ([]string, error) {
+	files, err := s.discovery.EnvFiles()
+	if err != nil {
+		return nil, err
+	}
+	var absent []string
+	for _, f := range files {
+		_, err := s.cache.ReadEncryptedAtRef(f, ref)
+		switch {
+		case err == nil:
+		case errors.Is(err, domain.ErrFileNotFound):
+			absent = append(absent, f)
+		default:
+			return nil, err
+		}
+	}
+	return absent, nil
+}
+
 // missingLocallyOnly returns the tracked files remote has when NONE of the
 // tracked files exist in the working tree, and nil otherwise.
 func (s *Syncer) missingLocallyOnly(files []string) ([]string, error) {

@@ -168,9 +168,6 @@ type PullResult struct {
 	// FilesDeleted is the number of files removed locally because the
 	// remote dropped them (catch-up to a remote deletion).
 	FilesDeleted int `json:"files_deleted,omitempty"`
-	// DeletedFiles lists the files removed (or, in dry-run, to be removed)
-	// locally, so a follow-up push can approve exactly those deletions
-	DeletedFiles []string `json:"deleted_files,omitempty"`
 	// FilesSkipped is the number of files left untouched because their
 	// content already matched remote.
 	FilesSkipped int `json:"files_skipped"`

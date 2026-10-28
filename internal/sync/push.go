@@ -48,12 +48,20 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 		files = nil // No tracked files — orphan cleanup will handle removals
 	}
 
+	// Read every tracked file once. Approval and the commit below both use
+	// this snapshot, so a file deleted mid-push can't become an unapproved
+	// remote deletion.
+	local, err := s.readLocalFiles(files)
+	if err != nil {
+		return nil, err
+	}
+
 	// Refuse to delete anything from remote the caller didn't approve.
 	// Checked after syncing from storage, so files published by another
 	// machine since confirmation are included, and before the cache is
 	// touched so a refusal leaves no partial state.
 	if !opts.AllowDeletes && !opts.DryRun {
-		deletions, err := s.pendingDeletions(files)
+		deletions, err := s.pendingDeletions(files, local)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +80,8 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 
 	// Process each file
 	for _, file := range files {
-		if !s.discovery.FileExists(file) {
+		content, exists := local[file]
+		if !exists {
 			// File doesn't exist locally - check if we should delete from cache
 			_, err := s.cache.ReadEncrypted(file)
 			if err == nil {
@@ -85,12 +94,6 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 				result.FilesDeleted++
 			}
 			continue
-		}
-
-		// Read file content
-		content, err := s.discovery.ReadFile(file)
-		if err != nil {
-			return nil, fmt.Errorf("failed to read %s: %w", file, err)
 		}
 
 		// Check if file is new or modified
@@ -206,14 +209,31 @@ func (s *Syncer) Push(ctx context.Context, opts PushOptions) (*domain.PushResult
 	return result, nil
 }
 
+// readLocalFiles reads each tracked file from the working tree. Missing files
+// are absent from the map; any other read error aborts the push.
+func (s *Syncer) readLocalFiles(files []string) (map[string][]byte, error) {
+	local := make(map[string][]byte, len(files))
+	for _, file := range files {
+		content, err := s.discovery.ReadFile(file)
+		if errors.Is(err, domain.ErrFileNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read %s: %w", file, err)
+		}
+		local[file] = content
+	}
+	return local, nil
+}
+
 // pendingDeletions returns the files a push would delete from remote: tracked
-// files missing from the working tree, then cached files no longer tracked.
-func (s *Syncer) pendingDeletions(files []string) ([]string, error) {
+// files missing from the local snapshot, then cached files no longer tracked.
+func (s *Syncer) pendingDeletions(files []string, local map[string][]byte) ([]string, error) {
 	var deletions []string
 	trackedSet := make(map[string]bool, len(files))
 	for _, file := range files {
 		trackedSet[file] = true
-		if s.discovery.FileExists(file) {
+		if _, exists := local[file]; exists {
 			continue
 		}
 		if _, err := s.cache.ReadEncrypted(file); err == nil {
