@@ -1,0 +1,13 @@
+version: 1
+targets:
+  cli:
+    kind: cli
+    # release.yaml runs .goreleaser.yaml on v* tags: ./cmd/envsecrets from
+    # go.mod, to the GitHub release, the tap's envsecrets formula and the
+    # apt-charliek dispatch.
+    released: { tag_pattern: '^v\d+\.\d+\.\d+$', homebrew: envsecrets }
+    ships: [go.mod]
+lockfiles:
+  # pyproject.toml has only the docs group (zensical and the docs theme): it
+  # builds the documentation site, which no release artifact contains.
+  uv.lock: { role: build-tool }
